@@ -64,9 +64,27 @@ const eip2612Abi = [
   }
 ]
 
+interface Payment {
+  id: string
+  type: 'sent' | 'received'
+  amount: string
+  recipient: string
+  sender: string
+  message: string
+  timestamp: Date
+  status: 'pending' | 'completed' | 'failed'
+}
+
+interface User {
+  username: string
+  handle: string
+  walletAddress: string
+  avatar: string
+}
+
 interface WalletState {
   isConnected: boolean
-  username: string
+  user: User | null
   smartAccount: any
   bundlerClient: any
   balance: string
@@ -163,7 +181,7 @@ async function signPermit({
 function App() {
   const [walletState, setWalletState] = useState<WalletState>({
     isConnected: false,
-    username: '',
+    user: null,
     smartAccount: null,
     bundlerClient: null,
     balance: '0',
@@ -171,9 +189,12 @@ function App() {
     error: null,
   })
 
-  const [recipientAddress, setRecipientAddress] = useState('')
+  const [payments, setPayments] = useState<Payment[]>([])
+  const [showSendForm, setShowSendForm] = useState(false)
+  const [recipientHandle, setRecipientHandle] = useState('')
   const [amount, setAmount] = useState('')
-  const [usePaymaster, setUsePaymaster] = useState(false)
+  const [message, setMessage] = useState('')
+  const [usePaymaster, setUsePaymaster] = useState(true)
 
   // Check if environment variables are set
   useEffect(() => {
@@ -193,7 +214,7 @@ function App() {
 
   // Register or login with passkey
   const handlePasskeyAuth = async (mode: 'register' | 'login') => {
-    if (!walletState.username) {
+    if (!walletState.user?.username) {
       setWalletState(prev => ({
         ...prev,
         error: 'Please enter a username'
@@ -211,7 +232,7 @@ function App() {
       const credential = await toWebAuthnCredential({
         transport: passkeyTransport,
         mode: mode === 'register' ? WebAuthnMode.Register : WebAuthnMode.Login,
-        username: walletState.username,
+        username: walletState.user.username,
       })
 
       // 3. Create modular transport for baseSepolia
@@ -241,8 +262,17 @@ function App() {
         transport: modularTransport,
       })
 
+      // Create user object
+      const user: User = {
+        username: walletState.user.username,
+        handle: `@${walletState.user.username}`,
+        walletAddress: smartAccount.address,
+        avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${walletState.user.username}`,
+      }
+
       setWalletState(prev => ({
         ...prev,
+        user,
         smartAccount,
         bundlerClient,
         isConnected: true,
@@ -259,12 +289,12 @@ function App() {
     }
   }
 
-  // Send transaction with or without paymaster
-  const handleSendTransaction = async () => {
-    if (!walletState.bundlerClient || !recipientAddress || !amount) {
+  // Send payment
+  const handleSendPayment = async () => {
+    if (!walletState.bundlerClient || !recipientHandle || !amount) {
       setWalletState(prev => ({
         ...prev,
-        error: 'Please connect wallet and provide recipient address and amount'
+        error: 'Please connect wallet and provide recipient handle and amount'
       }))
       return
     }
@@ -275,13 +305,35 @@ function App() {
       // Convert amount to wei (USDC has 6 decimals)
       const amountInWei = BigInt(parseFloat(amount) * Math.pow(10, USDC_DECIMALS))
 
+      // For demo purposes, we'll use a mock recipient address
+      // In a real app, you'd look up the handle in a database
+      const mockRecipientAddress = '0x742d35Cc6634C0532925a3b8D4C9db96C4b4d8b6'
+
       if (usePaymaster) {
         // Use Circle Paymaster to pay gas with USDC
-        await handlePaymasterTransaction(amountInWei)
+        await handlePaymasterTransaction(amountInWei, mockRecipientAddress)
       } else {
         // Regular transaction with native gas payment
-        await handleRegularTransaction(amountInWei)
+        await handleRegularTransaction(amountInWei, mockRecipientAddress)
       }
+
+      // Add payment to history
+      const newPayment: Payment = {
+        id: Date.now().toString(),
+        type: 'sent',
+        amount,
+        recipient: recipientHandle,
+        sender: walletState.user?.username || '',
+        message,
+        timestamp: new Date(),
+        status: 'completed',
+      }
+
+      setPayments(prev => [newPayment, ...prev])
+      setShowSendForm(false)
+      setRecipientHandle('')
+      setAmount('')
+      setMessage('')
 
       setWalletState(prev => ({
         ...prev,
@@ -300,7 +352,7 @@ function App() {
   }
 
   // Regular transaction (native gas payment)
-  const handleRegularTransaction = async (amountInWei: bigint) => {
+  const handleRegularTransaction = async (amountInWei: bigint, recipientAddress: string) => {
     const userOpHash = await walletState.bundlerClient.sendUserOperation({
       account: walletState.smartAccount,
       calls: [encodeTransfer(recipientAddress as `0x${string}`, USDC_CONTRACT_ADDRESS, amountInWei)],
@@ -311,11 +363,11 @@ function App() {
       hash: userOpHash,
     })
 
-    alert(`Transaction successful! Hash: ${receipt.transactionHash}`)
+    alert(`Payment sent! Hash: ${receipt.transactionHash}`)
   }
 
   // Paymaster transaction (USDC gas payment)
-  const handlePaymasterTransaction = async (amountInWei: bigint) => {
+  const handlePaymasterTransaction = async (amountInWei: bigint, recipientAddress: string) => {
     // Create modular transport for baseSepolia
     const modularTransport = toModularTransport(
       clientUrl + '/baseSepolia',
@@ -372,17 +424,17 @@ function App() {
       hash: userOpHash,
     })
 
-    alert(`Paymaster transaction successful! Hash: ${receipt.transactionHash}`)
+    alert(`Payment sent! Hash: ${receipt.transactionHash}`)
   }
 
   return (
-    <div className="wallet-app">
-      <header className="wallet-header">
-        <h1>🦾 Circle Smart Wallet</h1>
-        <p>Passkey-based smart wallet with USDC payments and gasless option</p>
+    <div className="pay-app">
+      <header className="pay-header">
+        <h1>💸 PayFriends</h1>
+        <p>Send USDC to friends instantly with passkey security</p>
       </header>
 
-      <main className="wallet-main">
+      <main className="pay-main">
         {/* Environment Variables Check */}
         {(!clientKey || clientKey === 'Not set' || !clientUrl || clientUrl === 'Not set') && (
           <div className="error-section">
@@ -398,15 +450,24 @@ function App() {
         {/* Authentication Section */}
         {!walletState.isConnected && (
           <section className="auth-section">
-            <h2>🔐 Connect Your Smart Wallet</h2>
+            <h2>🔐 Welcome to PayFriends</h2>
+            <p>Create your account with passkey security</p>
             <div className="auth-form">
               <div className="form-group">
-                <label htmlFor="username">Username:</label>
+                <label htmlFor="username">Choose your username:</label>
                 <input
                   type="text"
                   id="username"
-                  value={walletState.username}
-                  onChange={(e) => setWalletState(prev => ({ ...prev, username: e.target.value }))}
+                  value={walletState.user?.username || ''}
+                  onChange={(e) => setWalletState(prev => ({ 
+                    ...prev, 
+                    user: { 
+                      username: e.target.value, 
+                      handle: `@${e.target.value}`, 
+                      walletAddress: '', 
+                      avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${e.target.value}` 
+                    } 
+                  }))}
                   placeholder="Enter your username"
                   disabled={walletState.loading}
                 />
@@ -415,59 +476,92 @@ function App() {
               <div className="auth-buttons">
                 <button
                   onClick={() => handlePasskeyAuth('register')}
-                  disabled={walletState.loading || !walletState.username}
+                  disabled={walletState.loading || !walletState.user?.username}
                   className="auth-btn register"
                 >
-                  {walletState.loading ? 'Creating...' : 'Create New Wallet'}
+                  {walletState.loading ? 'Creating...' : 'Create Account'}
                 </button>
                 
                 <button
                   onClick={() => handlePasskeyAuth('login')}
-                  disabled={walletState.loading || !walletState.username}
+                  disabled={walletState.loading || !walletState.user?.username}
                   className="auth-btn login"
                 >
-                  {walletState.loading ? 'Connecting...' : 'Connect Existing Wallet'}
+                  {walletState.loading ? 'Connecting...' : 'Sign In'}
                 </button>
               </div>
             </div>
           </section>
         )}
 
-        {/* Connected Wallet Section */}
-        {walletState.isConnected && (
+        {/* Connected User Section */}
+        {walletState.isConnected && walletState.user && (
           <>
-            <section className="wallet-info">
-              <h2>✅ Wallet Connected</h2>
-              <div className="wallet-details">
-                <p><strong>Username:</strong> {walletState.username}</p>
-                <p><strong>Wallet Address:</strong> {walletState.smartAccount?.address || 'Loading...'}</p>
+            <section className="user-header">
+              <div className="user-info">
+                <div className="user-avatar">
+                  <img src={walletState.user.avatar} alt={walletState.user.username} />
+                </div>
+                <div className="user-details">
+                  <h2>{walletState.user.username}</h2>
+                  <p className="balance">$0.00 USDC</p>
+                </div>
               </div>
+              <button
+                onClick={() => setShowSendForm(true)}
+                className="send-btn primary"
+                disabled={walletState.loading}
+              >
+                Send
+              </button>
             </section>
-            
-            <section className="transaction-section">
-              <h2>💸 Send USDC</h2>
-              <div className="transaction-form">
+
+            {/* Send Form */}
+            {showSendForm && (
+              <section className="send-form">
+                <div className="form-header">
+                  <h3>Send Payment</h3>
+                  <button
+                    onClick={() => setShowSendForm(false)}
+                    className="close-btn"
+                  >
+                    ×
+                  </button>
+                </div>
+                
                 <div className="form-group">
-                  <label htmlFor="recipient">Recipient Address:</label>
+                  <label htmlFor="recipient">To:</label>
                   <input
                     type="text"
                     id="recipient"
-                    value={recipientAddress}
-                    onChange={(e) => setRecipientAddress(e.target.value)}
-                    placeholder="0x..."
+                    value={recipientHandle}
+                    onChange={(e) => setRecipientHandle(e.target.value)}
+                    placeholder="@username or scan QR code"
                     disabled={walletState.loading}
                   />
                 </div>
                 
                 <div className="form-group">
-                  <label htmlFor="amount">Amount (USDC):</label>
+                  <label htmlFor="amount">Amount:</label>
                   <input
                     type="number"
                     id="amount"
                     value={amount}
                     onChange={(e) => setAmount(e.target.value)}
                     placeholder="0.00"
-                    step="0.000001"
+                    step="0.01"
+                    disabled={walletState.loading}
+                  />
+                </div>
+
+                <div className="form-group">
+                  <label htmlFor="message">Message (optional):</label>
+                  <input
+                    type="text"
+                    id="message"
+                    value={message}
+                    onChange={(e) => setMessage(e.target.value)}
+                    placeholder="What's it for?"
                     disabled={walletState.loading}
                   />
                 </div>
@@ -480,21 +574,60 @@ function App() {
                       onChange={(e) => setUsePaymaster(e.target.checked)}
                       disabled={walletState.loading}
                     />
-                    <span>Pay gas with USDC (Circle Paymaster)</span>
+                    <span>Pay gas with USDC (recommended)</span>
                   </label>
-                  <small className="paymaster-info">
-                    When enabled, gas fees will be paid in USDC instead of native tokens
-                  </small>
                 </div>
                 
                 <button
-                  onClick={handleSendTransaction}
-                  disabled={walletState.loading || !recipientAddress || !amount}
-                  className={`send-btn ${usePaymaster ? 'paymaster' : ''}`}
+                  onClick={handleSendPayment}
+                  disabled={walletState.loading || !recipientHandle || !amount}
+                  className="send-btn"
                 >
-                  {walletState.loading ? 'Sending...' : `Send Transaction ${usePaymaster ? '(USDC Gas)' : ''}`}
+                  {walletState.loading ? 'Sending...' : 'Send Payment'}
                 </button>
-              </div>
+              </section>
+            )}
+
+            {/* Payment History */}
+            <section className="payment-history">
+              <h3>Activity</h3>
+              {payments.length === 0 ? (
+                <div className="empty-state">
+                  <p>No payments yet</p>
+                  <p>Send your first payment to get started!</p>
+                </div>
+              ) : (
+                <div className="payments-list">
+                  {payments.map((payment) => (
+                    <div key={payment.id} className={`payment-item ${payment.type}`}>
+                      <div className="payment-icon">
+                        {payment.type === 'sent' ? '💸' : '💰'}
+                      </div>
+                      <div className="payment-details">
+                        <div className="payment-header">
+                          <span className="payment-type">
+                            {payment.type === 'sent' ? 'Sent' : 'Received'}
+                          </span>
+                          <span className="payment-amount">
+                            ${payment.amount}
+                          </span>
+                        </div>
+                        <div className="payment-info">
+                          <span className="payment-user">
+                            {payment.type === 'sent' ? payment.recipient : payment.sender}
+                          </span>
+                          {payment.message && (
+                            <span className="payment-message">• {payment.message}</span>
+                          )}
+                        </div>
+                        <div className="payment-time">
+                          {payment.timestamp.toLocaleDateString()}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </section>
           </>
         )}
@@ -515,7 +648,7 @@ function App() {
         )}
       </main>
 
-      <footer className="wallet-footer">
+      <footer className="pay-footer">
         <p>Powered by Circle Modular Wallet SDK</p>
       </footer>
     </div>
