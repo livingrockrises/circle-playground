@@ -1,139 +1,208 @@
-# Circle Modular Wallet Demo
+# PayFriends - Splitwise-like Expense Tracking & Settlement App
 
-A Vite + React + TypeScript application demonstrating Circle Modular Wallet integration.
+A comprehensive expense tracking and debt settlement application built with React, TypeScript, and Circle's Modular Wallet SDK. PayFriends allows users to track shared expenses, manage debts, and settle payments using gasless transactions and USDC payments.
 
-## Features
+## 🚀 Features
 
-- ⚡ **Vite** - Fast build tool and development server
-- ⚛️ **React 19** - Latest React with modern features
-- 📝 **TypeScript** - Type safety and better developer experience
-- 🎨 **Modern CSS** - Clean and responsive design
-- 🔧 **ESLint** - Code linting and formatting
-- 🌍 **Environment Variables** - Secure configuration management
+### Core Functionality
+- **User Authentication**: Secure passkey-based authentication using Circle's Modular Wallet SDK
+- **Expense Tracking**: Add and manage shared expenses with multiple participants
+- **Debt Management**: Automatic calculation and tracking of debts between users
+- **Batch Payments**: Settle multiple debts in a single transaction
+- **Gasless Transactions**: First 2 payments are free, then USDC gas payments required
 
-## Prerequisites
+### Expense Management
+- **Flexible Splitting**: Equal split, percentage-based, or custom amounts
+- **Categories**: Organize expenses by category (Food, Transportation, Entertainment, etc.)
+- **Participant Management**: Add/remove participants and set individual shares
+- **Real-time Updates**: Live debt calculations and balance tracking
 
-- Node.js (version 18 or higher)
+### Payment System
+- **Gasless Payments**: First 2 payments are completely free
+- **USDC Gas Payments**: After 2 payments, gas fees paid in USDC using Circle Paymaster
+- **Batch Transactions**: Settle multiple debts to different users in one transaction
+- **Compliance Screening**: All transactions screened against sanctions blocklist
+
+### User Interface
+- **Three Main Views**:
+  - 💸 **Payments**: Send direct payments to friends
+  - 📊 **Expenses**: Track and manage shared expenses
+  - 💰 **Debts**: View and settle outstanding debts
+- **Responsive Design**: Works on desktop and mobile devices
+- **Real-time Balance**: See your current debt/credit status
+
+## 🏗️ Architecture
+
+### Services
+- **ExpenseService**: Handles expense creation, debt calculations, and settlement tracking
+- **BatchPaymentService**: Manages batch payment creation and validation
+- **ComplianceService**: Screens addresses against sanctions blocklist
+
+### Components
+- **ExpenseForm**: Add new expenses with participant management
+- **ExpensesList**: Display and filter expenses with sorting options
+- **DebtSettlement**: View debts and settle them in batches
+
+### Data Storage
+- **Local Storage**: All data stored locally in browser
+- **Username Mapping**: Maps usernames to wallet addresses
+- **Payment Counter**: Tracks gasless payment usage
+
+## 🛠️ Setup
+
+### Prerequisites
+- Node.js 18+ 
 - npm or yarn
+- Circle API credentials
 
-## Getting Started
+### Installation
 
-### 1. Clone and Install
+1. **Clone the repository**
+   ```bash
+   git clone <repository-url>
+   cd circle-modular-wallet
+   ```
 
-```bash
-# Navigate to the project directory
-cd circle-modular-wallet
+2. **Install dependencies**
+   ```bash
+   npm install
+   ```
 
-# Install dependencies
-npm install
-```
+3. **Environment Configuration**
+   Create a `.env` file in the root directory:
+   ```env
+   VITE_CLIENT_KEY=your_circle_client_key
+   VITE_CLIENT_URL=your_circle_client_url
+   VITE_CIRCLE_API_KEY=your_circle_api_key
+   VITE_COMPLIANCE_CHECK=true
+   ```
 
-### 2. Configure Environment Variables
+4. **Start Development Server**
+   ```bash
+   npm run dev
+   ```
 
-Create or update the `.env` file in the root directory:
+## 📱 Usage
 
-```env
-VITE_CLIENT_KEY=YOUR-CLIENT-KEY
-VITE_CLIENT_URL=YOUR-CLIENT-URL
-```
+### Getting Started
+1. **Create Account**: Enter a username and create your account with passkey authentication
+2. **Add Friends**: Share the app with friends so they can register
+3. **Add Expenses**: Start tracking shared expenses with your friends
 
-Replace the placeholder values with your actual Circle API credentials:
-- `YOUR-CLIENT-KEY`: Your Circle API client key
-- `YOUR-CLIENT-URL`: Your Circle API endpoint URL
+### Adding Expenses
+1. Navigate to the **Expenses** tab
+2. Click **"+ Add Expense"**
+3. Fill in expense details:
+   - Title and amount
+   - Category selection
+   - Description (optional)
+   - Select participants
+   - Choose split type (Equal, Percentage, Custom)
+4. Review the split summary
+5. Click **"Add Expense"**
 
-### 3. Start Development Server
+### Managing Debts
+1. Navigate to the **Debts** tab
+2. View your current balance and outstanding debts
+3. Select debts you want to settle
+4. Click **"Settle Selected Debts"** to process batch payment
 
-```bash
-npm run dev
-```
+### Making Payments
+1. Navigate to the **Payments** tab
+2. Select a friend from the list
+3. Enter amount and optional message
+4. Send payment (gasless for first 2, then USDC gas)
 
-The application will be available at `http://localhost:5173`
+## 🔧 Technical Details
 
-### 4. Build for Production
+### Payment Flow
+1. **Gasless Phase**: First 2 payments use native gas (free)
+2. **USDC Gas Phase**: Subsequent payments use USDC for gas via Circle Paymaster
+3. **Compliance Check**: All recipient addresses screened before transaction
+4. **Batch Processing**: Multiple payments combined into single user operation
 
+### Debt Calculation
+- **Net Balance**: Total owed to you minus total you owe
+- **Automatic Tracking**: Debts calculated from expense participants
+- **Settlement**: Mark expenses as settled when payments complete
+
+### Security Features
+- **Passkey Authentication**: Secure biometric/device-based authentication
+- **Compliance Screening**: Real-time sanctions blocklist checking
+- **Address Validation**: All addresses validated before processing
+- **Transaction Signing**: Secure transaction signing with user's private key
+
+## 🎨 UI/UX Features
+
+### Responsive Design
+- Mobile-first approach
+- Adaptive layouts for different screen sizes
+- Touch-friendly interface elements
+
+### Visual Feedback
+- Color-coded expense status (Paid, Owed, Settled)
+- Balance indicators (positive/negative)
+- Loading states and progress indicators
+- Success/error notifications
+
+### Accessibility
+- Keyboard navigation support
+- Screen reader compatibility
+- High contrast color schemes
+- Clear visual hierarchy
+
+## 🔄 State Management
+
+### Local Storage Keys
+- `payfriends_username_mapping`: Maps usernames to wallet addresses
+- `payfriends_payment_counter`: Tracks gasless payment usage
+- `payfriends_expenses`: Stores all expense data
+- `payfriends_settlements`: Stores settlement records
+- `payfriends_batch_payments`: Stores batch payment data
+
+### Data Flow
+1. **User Registration**: Username mapped to wallet address
+2. **Expense Creation**: Stored with participants and shares
+3. **Debt Calculation**: Real-time calculation from expenses
+4. **Payment Processing**: Updates payment counters and settlement status
+
+## 🚀 Deployment
+
+### Build for Production
 ```bash
 npm run build
 ```
 
-The built files will be in the `dist` directory.
-
-## Project Structure
-
-```
-circle-modular-wallet/
-├── src/
-│   ├── App.tsx          # Main application component
-│   ├── App.css          # Application styles
-│   ├── main.tsx         # Application entry point
-│   ├── index.css        # Global styles
-│   └── vite-env.d.ts    # Vite environment types
-├── public/              # Static assets
-├── .env                 # Environment variables
-├── package.json         # Dependencies and scripts
-├── vite.config.ts       # Vite configuration
-├── tsconfig.json        # TypeScript configuration
-└── README.md           # This file
+### Deploy to Vercel
+```bash
+npm install -g vercel
+vercel --prod
 ```
 
-## Available Scripts
-
-- `npm run dev` - Start development server
-- `npm run build` - Build for production
-- `npm run preview` - Preview production build
-- `npm run lint` - Run ESLint
-
-## Circle Modular Wallet Integration
-
-This project includes the Circle Modular Wallet SDK (`@circle-fin/modular-wallets-core`) for building wallet functionality.
-
-### Key Features
-
-- **Environment Variable Support**: Secure configuration management
-- **TypeScript Support**: Full type safety for Circle API integration
-- **Modern React**: Uses React 19 with latest features
-- **Hot Module Replacement**: Fast development with instant updates
-
-### Next Steps
-
-1. **Configure Circle API**: Update the `.env` file with your actual Circle API credentials
-2. **Import SDK**: Use the Circle Modular Wallet SDK in your components
-3. **Build Features**: Implement wallet creation, transaction signing, and other wallet functionality
-4. **Add Authentication**: Integrate user authentication and wallet management
-5. **Deploy**: Build and deploy your application
-
-## Development
-
-The application uses Vite for fast development and building. The development server includes:
-
-- Hot Module Replacement (HMR)
-- Fast refresh for React components
-- TypeScript compilation
-- ESLint integration
-
-## Environment Variables
-
-The application uses Vite's environment variable system. Variables prefixed with `VITE_` are exposed to the client-side code.
-
-### Available Variables
-
-- `VITE_CLIENT_KEY`: Circle API client key
-- `VITE_CLIENT_URL`: Circle API endpoint URL
-
-### Adding New Variables
-
-To add new environment variables:
-
-1. Add them to the `.env` file with the `VITE_` prefix
-2. Access them in your code using `import.meta.env.VITE_VARIABLE_NAME`
-
-## Contributing
+## 🤝 Contributing
 
 1. Fork the repository
 2. Create a feature branch
 3. Make your changes
-4. Run tests and linting
+4. Add tests if applicable
 5. Submit a pull request
 
-## License
+## 📄 License
 
-This project is licensed under the ISC License.
+This project is licensed under the MIT License - see the LICENSE file for details.
+
+## 🆘 Support
+
+For support and questions:
+- Create an issue in the repository
+- Check the Circle documentation
+- Review the compliance service configuration
+
+## 🔮 Future Enhancements
+
+- **Multi-currency Support**: Support for different tokens
+- **Group Management**: Create expense groups for different contexts
+- **Recurring Expenses**: Set up recurring expense tracking
+- **Export Features**: Export expense reports and debt summaries
+- **Mobile App**: Native mobile application
+- **Web3 Integration**: Direct blockchain integration for advanced users
