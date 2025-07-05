@@ -23,9 +23,11 @@ const clientUrl = import.meta.env.VITE_CLIENT_URL as string
 const USDC_CONTRACT_ADDRESS = '0x036CbD53842c5426634e7929541eC2318f3dCF7e' as `0x${string}` // Base Sepolia testnet
 const USDC_DECIMALS = 6
 const PAYMASTER_V07_ADDRESS = '0x31BE08D380A21fc740883c0BC434FcFc88740b58' as `0x${string}` // Circle Paymaster v0.7
+const MAX_GASLESS_PAYMENTS = 2
 
 // Username mapping storage
 const USERNAME_MAPPING_KEY = 'payfriends_username_mapping'
+const PAYMENT_COUNTER_KEY = 'payfriends_payment_counter'
 
 // Helper functions for username mapping
 const getUsernameMapping = (): Record<string, string> => {
@@ -58,6 +60,33 @@ const isValidAddress = (address: string): boolean => {
   } catch {
     return false
   }
+}
+
+// Payment counter functions
+const getPaymentCounter = (username: string): number => {
+  try {
+    const stored = localStorage.getItem(PAYMENT_COUNTER_KEY)
+    const counters = stored ? JSON.parse(stored) : {}
+    return counters[username.toLowerCase()] || 0
+  } catch {
+    return 0
+  }
+}
+
+const incrementPaymentCounter = (username: string) => {
+  try {
+    const stored = localStorage.getItem(PAYMENT_COUNTER_KEY)
+    const counters = stored ? JSON.parse(stored) : {}
+    counters[username.toLowerCase()] = (counters[username.toLowerCase()] || 0) + 1
+    localStorage.setItem(PAYMENT_COUNTER_KEY, JSON.stringify(counters))
+  } catch (error) {
+    console.error('Failed to save payment counter:', error)
+  }
+}
+
+const canUseGaslessPayment = (username: string): boolean => {
+  const paymentCount = getPaymentCounter(username)
+  return paymentCount < MAX_GASLESS_PAYMENTS
 }
 
 // EIP-2612 Permit ABI
@@ -230,7 +259,6 @@ function App() {
   const [recipientHandle, setRecipientHandle] = useState('')
   const [amount, setAmount] = useState('')
   const [message, setMessage] = useState('')
-  const [usePaymaster, setUsePaymaster] = useState(true)
   const [showDebug, setShowDebug] = useState(false)
 
   // Check if environment variables are set
@@ -331,7 +359,7 @@ function App() {
 
   // Send payment
   const handleSendPayment = async () => {
-    if (!walletState.bundlerClient || !recipientHandle || !amount) {
+    if (!walletState.bundlerClient || !recipientHandle || !amount || !walletState.user) {
       setWalletState(prev => ({
         ...prev,
         error: 'Please connect wallet and provide recipient handle and amount'
@@ -373,13 +401,25 @@ function App() {
         }
       }
 
-      if (usePaymaster) {
+      // Check if user can use gasless payment
+      const canUseGasless = canUseGaslessPayment(walletState.user.username)
+      const paymentCount = getPaymentCounter(walletState.user.username)
+      
+      // Automatically choose payment method based on payment count
+      const shouldUsePaymaster = !canUseGasless
+      
+      console.log(`Payment #${paymentCount + 1} for ${walletState.user.username}: ${shouldUsePaymaster ? 'USDC gas' : 'Gasless'}`)
+
+      if (shouldUsePaymaster) {
         // Use Circle Paymaster to pay gas with USDC
         await handlePaymasterTransaction(amountInWei, recipientAddress)
       } else {
-        // Regular transaction with native gas payment
+        // Regular transaction with native gas payment (gasless)
         await handleRegularTransaction(amountInWei, recipientAddress)
       }
+
+      // Increment payment counter after successful transaction
+      incrementPaymentCounter(walletState.user.username)
 
       // Add payment to history
       const newPayment: Payment = {
@@ -387,7 +427,7 @@ function App() {
         type: 'sent',
         amount,
         recipient: recipientHandle,
-        sender: walletState.user?.username || '',
+        sender: walletState.user.username,
         message,
         timestamp: new Date(),
         status: 'completed',
@@ -641,6 +681,37 @@ function App() {
                     </button>
                   </div>
                   
+                  {/* Payment Status Indicator */}
+                  {walletState.user && (
+                    <div className="payment-status">
+                      {(() => {
+                        const paymentCount = getPaymentCounter(walletState.user.username)
+                        const canUseGasless = canUseGaslessPayment(walletState.user.username)
+                        const remainingGasless = MAX_GASLESS_PAYMENTS - paymentCount
+                        
+                        return (
+                          <div className={`status-indicator ${canUseGasless ? 'gasless' : 'usdc-gas'}`}>
+                            {canUseGasless ? (
+                              <div>
+                                <span className="status-icon">🎁</span>
+                                <span className="status-text">
+                                  Gasless payment available! ({remainingGasless} free payments left)
+                                </span>
+                              </div>
+                            ) : (
+                              <div>
+                                <span className="status-icon">💳</span>
+                                <span className="status-text">
+                                  USDC gas payment required (used {paymentCount} free payments)
+                                </span>
+                              </div>
+                            )}
+                          </div>
+                        )
+                      })()}
+                    </div>
+                  )}
+                  
                   <div className="form-group">
                     <label htmlFor="recipient">To:</label>
                     <input
@@ -676,18 +747,6 @@ function App() {
                       placeholder="What's it for?"
                       disabled={walletState.loading}
                     />
-                  </div>
-
-                  <div className="form-group">
-                    <label className="checkbox-label">
-                      <input
-                        type="checkbox"
-                        checked={usePaymaster}
-                        onChange={(e) => setUsePaymaster(e.target.checked)}
-                        disabled={walletState.loading}
-                      />
-                      <span>Pay gas with USDC (recommended)</span>
-                    </label>
                   </div>
                   
                   <button
@@ -756,16 +815,29 @@ function App() {
                 <div className="debug-info">
                   <h4>Registered Users</h4>
                   <div className="user-mappings">
-                    {Object.entries(getUsernameMapping()).map(([username, address]) => (
-                      <div key={username} className="user-mapping">
-                        <span className="username">@{username}</span>
-                        <span className="address">{address}</span>
-                      </div>
-                    ))}
+                    {Object.entries(getUsernameMapping()).map(([username, address]) => {
+                      const paymentCount = getPaymentCounter(username)
+                      const canUseGasless = canUseGaslessPayment(username)
+                      return (
+                        <div key={username} className="user-mapping">
+                          <span className="username">@{username}</span>
+                          <span className="address">{address}</span>
+                          <span className="payment-count">
+                            Payments: {paymentCount} ({canUseGasless ? 'Gasless available' : 'USDC gas required'})
+                          </span>
+                        </div>
+                      )
+                    })}
                   </div>
                   {Object.keys(getUsernameMapping()).length === 0 && (
                     <p>No users registered yet</p>
                   )}
+                  
+                  <h4>Payment Rules</h4>
+                  <div className="payment-rules">
+                    <p>• First {MAX_GASLESS_PAYMENTS} payments: <strong>Gasless</strong> (free)</p>
+                    <p>• After {MAX_GASLESS_PAYMENTS} payments: <strong>USDC gas</strong> required</p>
+                  </div>
                 </div>
               )}
             </section>

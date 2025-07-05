@@ -1008,10 +1008,35 @@ body {
 }
 
 .user-mapping .address {
-  font-family: 'Courier New', monospace;
-  color: #6c757d;
+  font-family: monospace;
   font-size: 0.8rem;
+  color: #6c757d;
   word-break: break-all;
+}
+
+.user-mapping .payment-count {
+  font-size: 0.8rem;
+  color: #495057;
+  font-weight: 500;
+  margin-top: 0.25rem;
+}
+
+.payment-rules {
+  margin-top: 1rem;
+  padding: 1rem;
+  background: rgba(0, 123, 255, 0.05);
+  border-radius: 8px;
+  border: 1px solid rgba(0, 123, 255, 0.1);
+}
+
+.payment-rules p {
+  margin: 0.5rem 0;
+  font-size: 0.9rem;
+  color: #495057;
+}
+
+.payment-rules strong {
+  color: #007bff;
 }
 
 /* Send Form */
@@ -1286,5 +1311,62 @@ body {
   
   .payment-item {
     padding: 1rem;
+  }
+}
+
+/* Payment Status Indicator */
+.payment-status {
+  margin-bottom: 1.5rem;
+}
+
+.status-indicator {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 1rem;
+  border-radius: 12px;
+  font-size: 0.9rem;
+  font-weight: 500;
+  border: 1px solid;
+  transition: all 0.2s ease;
+}
+
+.status-indicator.gasless {
+  background: linear-gradient(135deg, rgba(40, 167, 69, 0.1) 0%, rgba(40, 167, 69, 0.05) 100%);
+  border-color: rgba(40, 167, 69, 0.3);
+  color: #155724;
+}
+
+.status-indicator.usdc-gas {
+  background: linear-gradient(135deg, rgba(255, 193, 7, 0.1) 0%, rgba(255, 193, 7, 0.05) 100%);
+  border-color: rgba(255, 193, 7, 0.3);
+  color: #856404;
+}
+
+.status-icon {
+  font-size: 1.2rem;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.status-text {
+  flex: 1;
+  line-height: 1.4;
+}
+
+/* Responsive adjustments for payment status */
+@media (max-width: 768px) {
+  .status-indicator {
+    padding: 0.75rem;
+    font-size: 0.85rem;
+  }
+  
+  .status-icon {
+    font-size: 1.1rem;
+    width: 20px;
+    height: 20px;
   }
 }
