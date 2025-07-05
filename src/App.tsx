@@ -572,6 +572,22 @@ function App() {
                   <p className="wallet-address">{walletState.user.walletAddress}</p>
                 </div>
               </div>
+              <button
+                onClick={() => setWalletState(prev => ({
+                  ...prev,
+                  isConnected: false,
+                  user: null,
+                  smartAccount: null,
+                  bundlerClient: null,
+                  loading: false,
+                  error: null
+                }))}
+                className="logout-btn"
+                title="Sign out"
+              >
+                <span>🏠</span>
+                <span>Home</span>
+              </button>
             </section>
 
             {/* Users List and Send Form */}
