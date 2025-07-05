@@ -14,9 +14,12 @@ interface DebtSettlementProps {
 
 // Helper function to generate proper mock addresses
 const generateMockAddress = (): string => {
-  return `0x${Array.from({length: 40}, () => 
-    Math.floor(Math.random() * 16).toString(16)
-  ).join('')}`
+  const chars = '0123456789abcdef'
+  let result = '0x'
+  for (let i = 0; i < 40; i++) {
+    result += chars.charAt(Math.floor(Math.random() * chars.length))
+  }
+  return result
 }
 
 // Helper function to get or create proper address

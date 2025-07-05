@@ -530,6 +530,8 @@ function App() {
     const paymaster = {
       async getPaymasterData(parameters: any) {
         const permitAmount = 10000000n // 10 USDC for gas
+        console.log(`🔐 Single payment, permit amount: ${permitAmount} (${Number(permitAmount) / 1000000} USDC)`)
+        
         const permitSignature = await signPermit({
           tokenAddress: USDC_CONTRACT_ADDRESS,
           account: walletState.smartAccount,
@@ -602,6 +604,11 @@ function App() {
       const calls = batchPayment.payments.map(payment => 
         encodeTransfer(payment.toAddress as `0x${string}`, USDC_CONTRACT_ADDRESS, BigInt(Math.round(payment.amount * 1000000)))
       )
+
+      console.log(`🔄 Batch settlement: ${calls.length} payments, total amount: $${settlement.amount.toFixed(2)}`)
+      batchPayment.payments.forEach((payment, index) => {
+        console.log(`  Payment ${index + 1}: $${payment.amount.toFixed(2)} to @${payment.to}`)
+      })
 
       let receipt: any
 
@@ -705,7 +712,14 @@ function App() {
     // Create paymaster configuration
     const paymaster = {
       async getPaymasterData(parameters: any) {
-        const permitAmount = 10000000n // 10 USDC for gas
+        // Use higher permit amount for batch transactions
+        // Base amount: 10 USDC, plus 2 USDC per additional call
+        const baseAmount = 10000000n // 10 USDC
+        const perCallAmount = 2000000n // 2 USDC per additional call
+        const permitAmount = baseAmount + (BigInt(calls.length - 1) * perCallAmount)
+        
+        console.log(`🔐 Batch transaction with ${calls.length} calls, permit amount: ${permitAmount} (${Number(permitAmount) / 1000000} USDC)`)
+        
         const permitSignature = await signPermit({
           tokenAddress: USDC_CONTRACT_ADDRESS,
           account: walletState.smartAccount,
@@ -766,6 +780,15 @@ function App() {
     setRefreshKey(prev => prev + 1)
   }
 
+  // Function to clear all local data
+  const handleClearAllData = () => {
+    if (confirm('Are you sure you want to clear all local data? This will remove all expenses, settlements, and user mappings.')) {
+      localStorage.clear()
+      alert('All local data cleared! Please refresh the page.')
+      window.location.reload()
+    }
+  }
+
   return (
     <div className="pay-app">
       <header className="pay-header">
@@ -789,7 +812,7 @@ function App() {
         {/* Authentication Section */}
         {!walletState.isConnected && (
           <section className="auth-section">
-            <h2>🔐 Welcome to PayFriends</h2>
+            <h2>🔐 Welcome to Wise Frens</h2>
             <p>Create your account with passkey security</p>
             <div className="auth-form">
               <div className="form-group">
@@ -872,8 +895,8 @@ function App() {
                 className="logout-btn"
                 title="Sign out"
               >
-                <span>🏠</span>
-                <span>Home</span>
+                <span>🚪</span>
+                <span>Logout</span>
               </button>
             </section>
 
@@ -1226,6 +1249,13 @@ function App() {
                       className="debug-btn"
                     >
                       Test Debt Calculation
+                    </button>
+                    <button
+                      onClick={handleClearAllData}
+                      className="debug-btn"
+                      style={{ background: '#dc3545' }}
+                    >
+                      Clear All Data
                     </button>
                   </div>
                 </div>
