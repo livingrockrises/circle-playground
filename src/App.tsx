@@ -1,34 +1,170 @@
 import React, { useState, useEffect } from 'react'
 import './App.css'
+import { ComplianceService } from './services/complianceService'
+import { ExpenseService } from './services/expenseService'
+import { BatchPaymentService } from './services/batchPaymentService'
+import { ExpenseForm } from './components/ExpenseForm'
+import { DebtSettlement } from './components/DebtSettlement'
+import { ExpensesList } from './components/ExpensesList'
 import {
+  USDC_CONTRACT_ADDRESS,
+  USDC_DECIMALS,
+  PAYMASTER_V07_ADDRESS,
+  MAX_GASLESS_TRANSACTIONS,
+  USERNAME_MAPPING_KEY,
+  TRANSACTION_COUNTER_KEY,
+  CLIENT_KEY,
+  CLIENT_URL
+} from './constants'
+import type { Expense, Settlement } from './services/expenseService'
+import type { BatchPaymentItem } from './services/batchPaymentService'
+
+// Circle Modular Wallet SDK imports
+import { 
+  encodeTransfer,
   toPasskeyTransport,
   toWebAuthnCredential,
   toModularTransport,
   toCircleSmartAccount,
-  encodeTransfer,
-  WebAuthnMode,
+  WebAuthnMode
 } from '@circle-fin/modular-wallets-core'
-import { createPublicClient, getContract, encodePacked, parseErc6492Signature, maxUint256, getAddress } from 'viem'
+import { createPublicClient } from 'viem'
 import { baseSepolia } from 'viem/chains'
-import {
-  createBundlerClient,
-  toWebAuthnAccount,
-} from 'viem/account-abstraction'
-import { ComplianceService } from './services/complianceService'
+import { createBundlerClient, toWebAuthnAccount } from 'viem/account-abstraction'
+import { encodePacked, maxUint256, parseErc6492Signature } from 'viem'
 
-// Environment variables
-const clientKey = import.meta.env.VITE_CLIENT_KEY as string
-const clientUrl = import.meta.env.VITE_CLIENT_URL as string
+// USDC contract ABI for permit functions
+const USDC_ABI = [
+  {
+    inputs: [{ internalType: "address", name: "owner", type: "address" }],
+    name: "nonces",
+    outputs: [{ internalType: "uint256", name: "", type: "uint256" }],
+    stateMutability: "view",
+    type: "function",
+  },
+  {
+    inputs: [],
+    name: "name",
+    outputs: [{ internalType: "string", name: "", type: "string" }],
+    stateMutability: "view",
+    type: "function",
+  },
+  {
+    inputs: [],
+    name: "version",
+    outputs: [{ internalType: "string", name: "", type: "string" }],
+    stateMutability: "view",
+    type: "function",
+  },
+  {
+    inputs: [{ internalType: "address", name: "account", type: "address" }],
+    name: "balanceOf",
+    outputs: [{ internalType: "uint256", name: "", type: "uint256" }],
+    stateMutability: "view",
+    type: "function",
+  },
+] as const
 
-// Constants
-const USDC_CONTRACT_ADDRESS = '0x036CbD53842c5426634e7929541eC2318f3dCF7e' as `0x${string}` // Base Sepolia testnet
-const USDC_DECIMALS = 6
-const PAYMASTER_V07_ADDRESS = '0x31BE08D380A21fc740883c0BC434FcFc88740b58' as `0x${string}` // Circle Paymaster v0.7
-const MAX_GASLESS_PAYMENTS = 2
+// EIP-2612 permit implementation (adapted from Circle docs)
+async function eip2612Permit({
+  token,
+  chain,
+  ownerAddress,
+  spenderAddress,
+  value,
+}: {
+  token: any
+  chain: any
+  ownerAddress: `0x${string}`
+  spenderAddress: `0x${string}`
+  value: bigint
+}) {
+  return {
+    types: {
+      Permit: [
+        { name: "owner", type: "address" },
+        { name: "spender", type: "address" },
+        { name: "value", type: "uint256" },
+        { name: "nonce", type: "uint256" },
+        { name: "deadline", type: "uint256" },
+      ],
+    },
+    primaryType: "Permit",
+    domain: {
+      name: await token.read.name(),
+      version: await token.read.version(),
+      chainId: chain.id,
+      verifyingContract: token.address,
+    },
+    message: {
+      owner: ownerAddress,
+      spender: spenderAddress,
+      value,
+      nonce: await token.read.nonces([ownerAddress]),
+      deadline: maxUint256,
+    },
+  }
+}
 
-// Username mapping storage
-const USERNAME_MAPPING_KEY = 'payfriends_username_mapping'
-const PAYMENT_COUNTER_KEY = 'payfriends_payment_counter'
+// Sign permit function (simplified to match working payments code)
+async function signPermit({
+  tokenAddress,
+  client,
+  account,
+  spenderAddress,
+  permitAmount,
+}: {
+  tokenAddress: `0x${string}`
+  client: any
+  account: any
+  spenderAddress: `0x${string}`
+  permitAmount: bigint
+}) {
+  try {
+    // Create token contract instance
+    const token = {
+      address: tokenAddress,
+      abi: USDC_ABI,
+      read: {
+        name: async () => "USD Coin",
+        version: async () => "2",
+        nonces: async (args: [`0x${string}`]) => {
+          try {
+            return await client.readContract({
+              address: tokenAddress,
+              abi: USDC_ABI,
+              functionName: 'nonces',
+              args,
+            })
+          } catch (error) {
+            console.warn('⚠️ Could not read nonce, using 0:', error)
+            return 0n
+          }
+        }
+      }
+    }
+
+    const permitData = await eip2612Permit({
+      token,
+      chain: baseSepolia,
+      ownerAddress: account.address,
+      spenderAddress,
+      value: permitAmount,
+    })
+
+    console.log('🔐 Signing permit for USDC gas payment...')
+    console.log('Permit data:', permitData)
+    
+    const wrappedPermitSignature = await account.signTypedData(permitData)
+    const { signature } = parseErc6492Signature(wrappedPermitSignature)
+    
+    console.log('✅ Permit signature created:', signature)
+    return signature
+  } catch (error) {
+    console.error('❌ Permit signing failed:', error)
+    throw error
+  }
+}
 
 // Helper functions for username mapping
 const getUsernameMapping = (): Record<string, string> => {
@@ -63,10 +199,10 @@ const isValidAddress = (address: string): boolean => {
   }
 }
 
-// Payment counter functions
-const getPaymentCounter = (username: string): number => {
+// Transaction counter functions (unified for payments and settlements)
+const getTransactionCounter = (username: string): number => {
   try {
-    const stored = localStorage.getItem(PAYMENT_COUNTER_KEY)
+    const stored = localStorage.getItem(TRANSACTION_COUNTER_KEY)
     const counters = stored ? JSON.parse(stored) : {}
     return counters[username.toLowerCase()] || 0
   } catch {
@@ -74,61 +210,53 @@ const getPaymentCounter = (username: string): number => {
   }
 }
 
-const incrementPaymentCounter = (username: string) => {
+const incrementTransactionCounter = (username: string) => {
   try {
-    const stored = localStorage.getItem(PAYMENT_COUNTER_KEY)
+    const stored = localStorage.getItem(TRANSACTION_COUNTER_KEY)
     const counters = stored ? JSON.parse(stored) : {}
     counters[username.toLowerCase()] = (counters[username.toLowerCase()] || 0) + 1
-    localStorage.setItem(PAYMENT_COUNTER_KEY, JSON.stringify(counters))
+    localStorage.setItem(TRANSACTION_COUNTER_KEY, JSON.stringify(counters))
   } catch (error) {
-    console.error('Failed to save payment counter:', error)
+    console.error('Failed to save transaction counter:', error)
   }
 }
 
-const canUseGaslessPayment = (username: string): boolean => {
-  const paymentCount = getPaymentCounter(username)
-  return paymentCount < MAX_GASLESS_PAYMENTS
+const canUseGaslessTransaction = (username: string): boolean => {
+  const transactionCount = getTransactionCounter(username)
+  return transactionCount < MAX_GASLESS_TRANSACTIONS
 }
 
-// EIP-2612 Permit ABI
-const eip2612Abi = [
-  {
-    inputs: [
-      { internalType: "address", name: "owner", type: "address" },
-      { internalType: "address", name: "spender", type: "address" },
-      { internalType: "uint256", name: "value", type: "uint256" },
-      { internalType: "uint256", name: "deadline", type: "uint256" },
-      { internalType: "uint8", name: "v", type: "uint8" },
-      { internalType: "bytes32", name: "r", type: "bytes32" },
-      { internalType: "bytes32", name: "s", type: "bytes32" }
-    ],
-    name: "permit",
-    outputs: [],
-    stateMutability: "nonpayable",
-    type: "function"
-  },
-  {
-    inputs: [{ internalType: "address", name: "owner", type: "address" }],
-    name: "nonces",
-    outputs: [{ internalType: "uint256", name: "", type: "uint256" }],
-    stateMutability: "view",
-    type: "function"
-  },
-  {
-    inputs: [],
-    name: "version",
-    outputs: [{ internalType: "string", name: "", type: "string" }],
-    stateMutability: "view",
-    type: "function"
-  },
-  {
-    inputs: [],
-    name: "name",
-    outputs: [{ internalType: "string", name: "", type: "string" }],
-    stateMutability: "view",
-    type: "function"
+// Function to fetch USDC balance
+const fetchUSDCBalance = async (accountAddress: string): Promise<string> => {
+  try {
+    // Create modular transport for baseSepolia
+    const modularTransport = toModularTransport(
+      CLIENT_URL + '/baseSepolia',
+      CLIENT_KEY,
+    )
+
+    // Create client
+    const client = createPublicClient({
+      chain: baseSepolia,
+      transport: modularTransport,
+    })
+
+    // Read USDC balance
+    const balance = await client.readContract({
+      address: USDC_CONTRACT_ADDRESS,
+      abi: USDC_ABI,
+      functionName: 'balanceOf',
+      args: [accountAddress as `0x${string}`],
+    })
+
+    // Convert from wei to USDC (6 decimals)
+    const balanceInUSDC = Number(balance) / Math.pow(10, USDC_DECIMALS)
+    return balanceInUSDC.toFixed(2)
+  } catch (error) {
+    console.error('Failed to fetch USDC balance:', error)
+    return '0.00'
   }
-]
+}
 
 interface Payment {
   id: string
@@ -158,92 +286,6 @@ interface WalletState {
   error: string | null
 }
 
-// Permit signing function
-async function eip2612Permit({
-  token,
-  chain,
-  ownerAddress,
-  spenderAddress,
-  value,
-}: {
-  token: any
-  chain: any
-  ownerAddress: string
-  spenderAddress: string
-  value: bigint
-}) {
-  return {
-    types: {
-      Permit: [
-        { name: "owner", type: "address" },
-        { name: "spender", type: "address" },
-        { name: "value", type: "uint256" },
-        { name: "nonce", type: "uint256" },
-        { name: "deadline", type: "uint256" },
-      ],
-    },
-    primaryType: "Permit",
-    domain: {
-      name: await token.read.name(),
-      version: await token.read.version(),
-      chainId: chain.id,
-      verifyingContract: token.address,
-    },
-    message: {
-      owner: ownerAddress,
-      spender: spenderAddress,
-      value,
-      nonce: await token.read.nonces([ownerAddress]),
-      deadline: maxUint256,
-    },
-  }
-}
-
-async function signPermit({
-  tokenAddress,
-  client,
-  account,
-  spenderAddress,
-  permitAmount,
-}: {
-  tokenAddress: string
-  client: any
-  account: any
-  spenderAddress: string
-  permitAmount: bigint
-}) {
-  const token = getContract({
-    client,
-    address: tokenAddress as `0x${string}`,
-    abi: eip2612Abi,
-  })
-  
-  const permitData = await eip2612Permit({
-    token,
-    chain: client.chain,
-    ownerAddress: account.address,
-    spenderAddress,
-    value: permitAmount,
-  })
-
-  const wrappedPermitSignature = await account.signTypedData(permitData)
-
-  const isValid = await client.verifyTypedData({
-    ...permitData,
-    address: account.address,
-    signature: wrappedPermitSignature,
-  })
-
-  if (!isValid) {
-    throw new Error(
-      `Invalid permit signature for ${account.address}: ${wrappedPermitSignature}`,
-    )
-  }
-
-  const { signature } = parseErc6492Signature(wrappedPermitSignature)
-  return signature
-}
-
 function App() {
   const [walletState, setWalletState] = useState<WalletState>({
     isConnected: false,
@@ -252,38 +294,32 @@ function App() {
     bundlerClient: null,
     balance: '0',
     loading: false,
-    error: null,
+    error: null
   })
 
-  const [payments, setPayments] = useState<Payment[]>([])
-  const [showSendForm, setShowSendForm] = useState(false)
   const [recipientHandle, setRecipientHandle] = useState('')
   const [amount, setAmount] = useState('')
   const [message, setMessage] = useState('')
+  const [showSendForm, setShowSendForm] = useState(false)
+  const [payments, setPayments] = useState<Payment[]>([])
   const [showDebug, setShowDebug] = useState(false)
 
-  // Check if environment variables are set
-  useEffect(() => {
-    if (!clientKey || clientKey === 'Not set') {
-      setWalletState(prev => ({
-        ...prev,
-        error: 'VITE_CLIENT_KEY environment variable is not set'
-      }))
-    }
-    if (!clientUrl || clientUrl === 'Not set') {
-      setWalletState(prev => ({
-        ...prev,
-        error: 'VITE_CLIENT_URL environment variable is not set'
-      }))
-    }
-  }, [clientKey, clientUrl])
+  // New state for Splitwise functionality
+  const [currentView, setCurrentView] = useState<'payments' | 'expenses' | 'debts'>('payments')
+  const [showExpenseForm, setShowExpenseForm] = useState(false)
+  const [selectedExpense, setSelectedExpense] = useState<Expense | null>(null)
+  const [refreshKey, setRefreshKey] = useState(0) // Add refresh key for debt settlement
 
-  // Register or login with passkey
   const handlePasskeyAuth = async (mode: 'register' | 'login') => {
     if (!walletState.user?.username) {
-      setWalletState(prev => ({
-        ...prev,
-        error: 'Please enter a username'
+      setWalletState(prev => ({ ...prev, error: 'Please enter a username first' }))
+      return
+    }
+
+    if (!CLIENT_KEY || CLIENT_KEY === 'Not set' || !CLIENT_URL || CLIENT_URL === 'Not set') {
+      setWalletState(prev => ({ 
+        ...prev, 
+        error: 'Circle SDK not configured. Please set VITE_CLIENT_KEY and VITE_CLIENT_URL in .env file.' 
       }))
       return
     }
@@ -291,136 +327,127 @@ function App() {
     setWalletState(prev => ({ ...prev, loading: true, error: null }))
 
     try {
-      // 1. Create passkey transport
-      const passkeyTransport = toPasskeyTransport(clientUrl, clientKey)
+      console.log(`🔐 Starting ${mode} with Circle SDK...`)
+      console.log('Client Key:', CLIENT_KEY ? 'Set' : 'Not set')
+      console.log('Client URL:', CLIENT_URL)
+
+      // 1. Create Passkey Transport
+      const passkeyTransport = toPasskeyTransport(CLIENT_URL, CLIENT_KEY)
       
-      // 2. Register or login with passkey
+      // 2. Create WebAuthn Credential
       const credential = await toWebAuthnCredential({
         transport: passkeyTransport,
         mode: mode === 'register' ? WebAuthnMode.Register : WebAuthnMode.Login,
-        username: walletState.user.username,
+        username: walletState.user.username
       })
 
-      // 3. Create modular transport for baseSepolia
+      console.log('✅ Passkey authentication successful')
+
+      // 3. Create Modular Transport for Base Sepolia
       const modularTransport = toModularTransport(
-        clientUrl + '/baseSepolia',
-        clientKey,
+        CLIENT_URL + '/baseSepolia',
+        CLIENT_KEY,
       )
 
-      // 4. Create client
+      // 4. Create Public Client
       const client = createPublicClient({
         chain: baseSepolia,
         transport: modularTransport,
       })
 
-      // 5. Create WebAuthn account
-      const owner = toWebAuthnAccount({ credential })
-
-      // 6. Create Circle smart account
+      // 5. Create Circle Smart Account
       const smartAccount = await toCircleSmartAccount({
         client,
-        owner,
+        owner: toWebAuthnAccount({
+          credential,
+        }),
       })
 
-      // 7. Create bundler client
+      // 6. Create Bundler Client
       const bundlerClient = createBundlerClient({
+        account: smartAccount,
         chain: baseSepolia,
         transport: modularTransport,
       })
 
-      // Create user object
-      const user: User = {
-        username: walletState.user.username,
-        handle: `@${walletState.user.username}`,
-        walletAddress: smartAccount.address,
-        avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${walletState.user.username}`,
-      }
-
-      setWalletState(prev => ({
-        ...prev,
-        user,
-        smartAccount,
-        bundlerClient,
-        isConnected: true,
-        loading: false,
-        error: null,
-      }))
-
       // Save username mapping
       setUsernameMapping(walletState.user.username, smartAccount.address)
-    } catch (error) {
-      console.error('Passkey authentication error:', error)
+
+      // Fetch USDC balance
+      const balance = await fetchUSDCBalance(smartAccount.address)
+
       setWalletState(prev => ({
         ...prev,
+        isConnected: true,
+        smartAccount: smartAccount,
+        bundlerClient: bundlerClient,
+        balance: balance,
         loading: false,
-        error: error instanceof Error ? error.message : 'Authentication failed'
+        user: {
+          ...prev.user!,
+          walletAddress: smartAccount.address
+        }
+      }))
+
+      console.log(`✅ ${mode} successful - Address: ${smartAccount.address} - Balance: $${balance} USDC`)
+    } catch (error) {
+      console.error('Authentication failed:', error)
+      setWalletState(prev => ({ 
+        ...prev, 
+        loading: false, 
+        error: `Authentication failed: ${error instanceof Error ? error.message : 'Unknown error'}` 
       }))
     }
   }
 
-  // Send payment
   const handleSendPayment = async () => {
-    if (!walletState.bundlerClient || !recipientHandle || !amount || !walletState.user) {
-      setWalletState(prev => ({
-        ...prev,
-        error: 'Please connect wallet and provide recipient handle and amount'
-      }))
+    if (!walletState.user || !walletState.smartAccount || !walletState.bundlerClient) {
+      setWalletState(prev => ({ ...prev, error: 'Wallet not connected' }))
+      return
+    }
+
+    if (!recipientHandle || !amount) {
+      setWalletState(prev => ({ ...prev, error: 'Please enter recipient and amount' }))
+      return
+    }
+
+    const recipientAddress = getAddressFromUsername(recipientHandle.replace('@', ''))
+    if (!recipientAddress) {
+      setWalletState(prev => ({ ...prev, error: 'Recipient not found. Please use a registered username.' }))
+      return
+    }
+
+    const amountInWei = BigInt(Math.round(parseFloat(amount) * 1000000)) // USDC has 6 decimals
+    if (amountInWei <= 0) {
+      setWalletState(prev => ({ ...prev, error: 'Amount must be greater than 0' }))
       return
     }
 
     setWalletState(prev => ({ ...prev, loading: true, error: null }))
 
     try {
-      // Convert amount to wei (USDC has 6 decimals)
-      const amountInWei = BigInt(parseFloat(amount) * Math.pow(10, USDC_DECIMALS))
-
-      // Parse recipient - could be a username or direct address
-      let recipientAddress: `0x${string}`
-      
-      if (recipientHandle.startsWith('0x')) {
-        // Direct address input
-        try {
-          // Validate and normalize the address
-          recipientAddress = getAddress(recipientHandle) as `0x${string}`
-        } catch (error) {
-          throw new Error('Invalid address format. Please enter a valid Ethereum address.')
-        }
-      } else {
-        // Username/handle input - look up in local records
-        const cleanUsername = recipientHandle.replace('@', '') // Remove @ if present
-        const mappedAddress = getAddressFromUsername(cleanUsername)
-        
-        if (!mappedAddress) {
-          throw new Error(`User "${cleanUsername}" not found. Make sure they have registered with PayFriends.`)
-        }
-        
-        recipientAddress = mappedAddress as `0x${string}`
-        
-        // Validate the address
-        if (!isValidAddress(recipientAddress)) {
-          throw new Error('Invalid recipient address. Please try again.')
+      // Check compliance
+      const complianceEnabled = ComplianceService.isComplianceEnabled()
+      if (complianceEnabled) {
+        const complianceResult = await ComplianceService.screenAddress(recipientAddress)
+        if (!complianceResult.isAllowed) {
+          setWalletState(prev => ({ 
+            ...prev, 
+            loading: false, 
+            error: `Transaction blocked: ${ComplianceService.getComplianceErrorMessage(complianceResult)}` 
+          }))
+          return
         }
       }
-
-      // 🔍 COMPLIANCE SCREENING - Check recipient address against sanctions blocklist
-      console.log('🔍 Performing compliance screening...')
-      const complianceResult = await ComplianceService.screenAddress(recipientAddress)
-      
-      if (!complianceResult.isAllowed) {
-        const errorMessage = ComplianceService.getComplianceErrorMessage(complianceResult)
-        throw new Error(`🚫 Transaction blocked: ${errorMessage}`)
-      }
-      
-      console.log('✅ Compliance screening passed - proceeding with transaction')
 
       // Check if user can use gasless payment
-      const canUseGasless = canUseGaslessPayment(walletState.user.username)
-      const paymentCount = getPaymentCounter(walletState.user.username)
+      const canUseGasless = canUseGaslessTransaction(walletState.user.username)
+      const transactionCount = getTransactionCounter(walletState.user.username)
       
-      // Automatically choose payment method based on payment count
+      // Automatically choose payment method based on transaction count
       const shouldUsePaymaster = !canUseGasless
       
-      console.log(`Payment #${paymentCount + 1} for ${walletState.user.username}: ${shouldUsePaymaster ? 'USDC gas' : 'Gasless'}`)
+      console.log(`Transaction #${transactionCount + 1} for ${walletState.user.username}: ${shouldUsePaymaster ? 'USDC gas' : 'Gasless'}`)
 
       if (shouldUsePaymaster) {
         // Use Circle Paymaster to pay gas with USDC
@@ -430,44 +457,47 @@ function App() {
         await handleRegularTransaction(amountInWei, recipientAddress)
       }
 
-      // Increment payment counter after successful transaction
-      incrementPaymentCounter(walletState.user.username)
+      // Increment transaction counter after successful transaction
+      incrementTransactionCounter(walletState.user.username)
 
-      // Add payment to history
+      // Refresh balance after transaction
+      const newBalance = await fetchUSDCBalance(walletState.user.walletAddress)
+      setWalletState(prev => ({ ...prev, balance: newBalance }))
+
+      // Add to payments history
       const newPayment: Payment = {
-        id: Date.now().toString(),
+        id: `payment_${Date.now()}`,
         type: 'sent',
         amount,
         recipient: recipientHandle,
         sender: walletState.user.username,
         message,
         timestamp: new Date(),
-        status: 'completed',
+        status: 'completed'
       }
-
       setPayments(prev => [newPayment, ...prev])
-      setShowSendForm(false)
+
+      // Reset form
       setRecipientHandle('')
       setAmount('')
       setMessage('')
+      setShowSendForm(false)
 
-      setWalletState(prev => ({
-        ...prev,
-        loading: false,
-        error: null
-      }))
+      alert(`Payment sent! Amount: $${amount}`)
 
     } catch (error) {
-      console.error('Transaction error:', error)
+      console.error('Payment failed:', error)
       setWalletState(prev => ({
         ...prev,
         loading: false,
-        error: error instanceof Error ? error.message : 'Transaction failed'
+        error: `Payment failed: ${error instanceof Error ? error.message : 'Unknown error'}` 
       }))
+    } finally {
+      setWalletState(prev => ({ ...prev, loading: false }))
     }
   }
 
-  // Regular transaction (native gas payment)
+  // Regular transaction (native gas payment - gasless)
   const handleRegularTransaction = async (amountInWei: bigint, recipientAddress: string) => {
     const userOpHash = await walletState.bundlerClient.sendUserOperation({
       account: walletState.smartAccount,
@@ -479,15 +509,15 @@ function App() {
       hash: userOpHash,
     })
 
-    alert(`Payment sent! Hash: ${receipt.transactionHash}`)
+    console.log('✅ Gasless transaction successful:', receipt.transactionHash)
   }
 
   // Paymaster transaction (USDC gas payment)
   const handlePaymasterTransaction = async (amountInWei: bigint, recipientAddress: string) => {
     // Create modular transport for baseSepolia
     const modularTransport = toModularTransport(
-      clientUrl + '/baseSepolia',
-      clientKey,
+      CLIENT_URL + '/baseSepolia',
+      CLIENT_KEY,
     )
 
     // Create client
@@ -523,36 +553,229 @@ function App() {
       },
     }
 
-    // Create bundler client with paymaster
-    const paymasterBundlerClient = createBundlerClient({
-      chain: baseSepolia,
-      transport: modularTransport,
+    const userOpHash = await walletState.bundlerClient.sendUserOperation({
+      account: walletState.smartAccount,
+      calls: [encodeTransfer(recipientAddress as `0x${string}`, USDC_CONTRACT_ADDRESS, amountInWei)],
       paymaster,
     })
 
-    // Send user operation with paymaster
-    const userOpHash = await paymasterBundlerClient.sendUserOperation({
-      account: walletState.smartAccount,
-      calls: [encodeTransfer(recipientAddress as `0x${string}`, USDC_CONTRACT_ADDRESS, amountInWei)],
-    })
-
-    const { receipt } = await paymasterBundlerClient.waitForUserOperationReceipt({
+    const { receipt } = await walletState.bundlerClient.waitForUserOperationReceipt({
       hash: userOpHash,
     })
 
-    alert(`Payment sent! Hash: ${receipt.transactionHash}`)
+    console.log('✅ USDC paymaster transaction successful:', receipt.transactionHash)
+  }
+
+  // New functions for Splitwise functionality
+  const handleExpenseAdded = (expense: Expense) => {
+    setShowExpenseForm(false)
+    // Refresh expenses list if needed
+  }
+
+  const handleSettlementComplete = async (settlement: Settlement) => {
+    if (!walletState.user || !walletState.smartAccount || !walletState.bundlerClient) {
+      setWalletState(prev => ({ ...prev, error: 'Wallet not connected' }))
+      return
+    }
+
+    setWalletState(prev => ({ ...prev, loading: true, error: null }))
+
+    try {
+      // Get the batch payment that was created
+      const batchPayments = BatchPaymentService.getBatchPayments()
+      const batchPayment = batchPayments.find(bp => bp.id === settlement.id)
+      
+      if (!batchPayment) {
+        throw new Error('Batch payment not found')
+      }
+
+      // Check if user can use gasless transaction
+      const canUseGasless = canUseGaslessTransaction(walletState.user.username)
+      const transactionCount = getTransactionCounter(walletState.user.username)
+      
+      // Automatically choose payment method based on transaction count
+      const shouldUsePaymaster = !canUseGasless
+      
+      console.log(`Settlement #${transactionCount + 1} for ${walletState.user.username}: ${shouldUsePaymaster ? 'USDC gas' : 'Gasless'}`)
+      
+      // Create calls for all payments in the batch
+      const calls = batchPayment.payments.map(payment => 
+        encodeTransfer(payment.toAddress as `0x${string}`, USDC_CONTRACT_ADDRESS, BigInt(Math.round(payment.amount * 1000000)))
+      )
+
+      let receipt: any
+
+      if (shouldUsePaymaster) {
+        // Use Circle Paymaster to pay gas with USDC
+        receipt = await handleBatchPaymasterTransaction(calls)
+      } else {
+        // Regular transaction with native gas payment (gasless)
+        receipt = await handleBatchRegularTransaction(calls)
+      }
+
+      // Increment transaction counter after successful transaction
+      incrementTransactionCounter(walletState.user.username)
+
+      // Refresh balance after transaction
+      const newBalance = await fetchUSDCBalance(walletState.user.walletAddress)
+      setWalletState(prev => ({ ...prev, balance: newBalance }))
+
+      // Update batch payment status
+      BatchPaymentService.updateBatchPayment(batchPayment.id, {
+        status: 'completed',
+        transactionHash: receipt.transactionHash
+      })
+
+      // Update settlement status to completed for both payer and payee
+      const settlements = ExpenseService.getSettlements()
+      settlements.forEach(settlement => {
+        // Update settlements where you are the payer
+        if (settlement.from === walletState.user?.username && settlement.status === 'pending') {
+          ExpenseService.updateSettlement(settlement.id, {
+            status: 'completed',
+            transactionHash: receipt.transactionHash
+          })
+        }
+        // Also update settlements where you are the payee (someone paid you)
+        else if (settlement.to === walletState.user?.username && settlement.status === 'pending') {
+          ExpenseService.updateSettlement(settlement.id, {
+            status: 'completed',
+            transactionHash: receipt.transactionHash
+          })
+        }
+      })
+
+      // Debug: Log the state after settlement
+      console.log('=== AFTER SETTLEMENT DEBUG ===')
+      if (walletState.user?.username) {
+        ExpenseService.debugAll(walletState.user.username)
+      }
+
+      // Mark expenses as settled
+      const expenseIds = batchPayment.payments.flatMap(payment => payment.debtIds)
+      ExpenseService.markExpensesAsSettled(expenseIds)
+
+      // Force refresh of debt settlement component
+      setRefreshKey(prev => prev + 1)
+
+      alert(`Settlement completed! Total amount: $${settlement.amount.toFixed(2)}`)
+
+    } catch (error) {
+      console.error('Settlement failed:', error)
+      setWalletState(prev => ({ 
+        ...prev, 
+        loading: false, 
+        error: `Settlement failed: ${error instanceof Error ? error.message : 'Unknown error'}` 
+      }))
+    } finally {
+      setWalletState(prev => ({ ...prev, loading: false }))
+    }
+  }
+
+  // Regular batch transaction (native gas payment - gasless)
+  const handleBatchRegularTransaction = async (calls: any[]) => {
+    const userOpHash = await walletState.bundlerClient.sendUserOperation({
+      account: walletState.smartAccount,
+      calls,
+      paymaster: true,
+    })
+
+    const { receipt } = await walletState.bundlerClient.waitForUserOperationReceipt({
+      hash: userOpHash,
+    })
+
+    console.log('✅ Gasless batch transaction successful:', receipt.transactionHash)
+    return receipt
+  }
+
+  // Paymaster batch transaction (USDC gas payment)
+  const handleBatchPaymasterTransaction = async (calls: any[]) => {
+    // Create modular transport for baseSepolia
+    const modularTransport = toModularTransport(
+      CLIENT_URL + '/baseSepolia',
+      CLIENT_KEY,
+    )
+
+    // Create client
+    const client = createPublicClient({
+      chain: baseSepolia,
+      transport: modularTransport,
+    })
+
+    // Create paymaster configuration
+    const paymaster = {
+      async getPaymasterData(parameters: any) {
+        const permitAmount = 10000000n // 10 USDC for gas
+        const permitSignature = await signPermit({
+          tokenAddress: USDC_CONTRACT_ADDRESS,
+          account: walletState.smartAccount,
+          client,
+          spenderAddress: PAYMASTER_V07_ADDRESS,
+          permitAmount: permitAmount,
+        })
+
+        const paymasterData = encodePacked(
+          ["uint8", "address", "uint256", "bytes"],
+          [0, USDC_CONTRACT_ADDRESS, permitAmount, permitSignature],
+        ) as `0x${string}`
+
+        return {
+          paymaster: PAYMASTER_V07_ADDRESS as `0x${string}`,
+          paymasterData,
+          paymasterVerificationGasLimit: 200000n,
+          paymasterPostOpGasLimit: 15000n,
+          isFinal: true,
+        }
+      },
+    }
+
+    const userOpHash = await walletState.bundlerClient.sendUserOperation({
+      account: walletState.smartAccount,
+      calls,
+      paymaster,
+    })
+
+    const { receipt } = await walletState.bundlerClient.waitForUserOperationReceipt({
+      hash: userOpHash,
+    })
+
+    console.log('✅ USDC paymaster batch transaction successful:', receipt.transactionHash)
+    return receipt
+  }
+
+  const handleExpenseClick = (expense: Expense) => {
+    setSelectedExpense(expense)
+  }
+
+  // Function to refresh balance manually
+  const handleRefreshBalance = async () => {
+    if (!walletState.user?.walletAddress) return
+    
+    setWalletState(prev => ({ ...prev, loading: true }))
+    try {
+      const newBalance = await fetchUSDCBalance(walletState.user.walletAddress)
+      setWalletState(prev => ({ ...prev, balance: newBalance, loading: false }))
+    } catch (error) {
+      console.error('Failed to refresh balance:', error)
+      setWalletState(prev => ({ ...prev, loading: false }))
+    }
+  }
+
+  // Function to refresh debt settlement
+  const handleRefreshDebts = () => {
+    setRefreshKey(prev => prev + 1)
   }
 
   return (
     <div className="pay-app">
       <header className="pay-header">
-        <h1>💸 PayFriends</h1>
-        <p>Send USDC to friends instantly with passkey security</p>
+        <h1>🌍 Eurotrip Splitwise</h1>
+        <p>Split expenses and settle debts with friends instantly</p>
       </header>
 
       <main className="pay-main">
         {/* Environment Variables Check */}
-        {(!clientKey || clientKey === 'Not set' || !clientUrl || clientUrl === 'Not set') && (
+        {(!CLIENT_KEY || CLIENT_KEY === 'Not set' || !CLIENT_URL || CLIENT_URL === 'Not set') && (
           <div className="error-section">
             <h2>Configuration Required</h2>
             <p>Please set the following environment variables in your <code>.env</code> file:</p>
@@ -620,7 +843,19 @@ function App() {
                 </div>
                 <div className="user-details">
                   <h2>{walletState.user.username}</h2>
-                  <p className="balance">$0.00 USDC</p>
+                  <div className="balance-container">
+                    <p className="balance">
+                      {walletState.loading ? 'Loading...' : `$${walletState.balance} USDC`}
+                    </p>
+                    <button
+                      onClick={handleRefreshBalance}
+                      className="refresh-balance-btn"
+                      title="Refresh balance"
+                      disabled={walletState.loading}
+                    >
+                      🔄
+                    </button>
+                  </div>
                   <p className="wallet-address">{walletState.user.walletAddress}</p>
                 </div>
               </div>
@@ -642,150 +877,242 @@ function App() {
               </button>
             </section>
 
-            {/* Users List and Send Form */}
-            <div className="main-content">
-              <section className="users-section">
-                <h3>Send to Friends</h3>
-                <div className="users-list">
-                  {Object.entries(getUsernameMapping()).length === 0 ? (
-                    <div className="empty-users">
-                      <p>No friends registered yet</p>
-                      <p>Share PayFriends with your friends to start sending money!</p>
-                    </div>
-                  ) : (
-                    Object.entries(getUsernameMapping())
-                      .filter(([username]) => username !== walletState.user?.username.toLowerCase())
-                      .map(([username, address]) => (
-                        <div 
-                          key={username} 
-                          className="user-card"
-                          onClick={() => {
-                            setRecipientHandle(`@${username}`)
-                            setShowSendForm(true)
-                          }}
-                        >
-                          <div className="user-card-avatar">
-                            <img src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${username}`} alt={username} />
-                          </div>
-                          <div className="user-card-info">
-                            <h4>@{username}</h4>
-                            <p className="user-card-address">{address}</p>
-                          </div>
-                          <div className="user-card-action">
-                            <span>Send →</span>
-                          </div>
-                        </div>
-                      ))
-                  )}
-                </div>
-              </section>
+            {/* Navigation Tabs */}
+            <div className="nav-tabs">
+              <button
+                className={`nav-tab ${currentView === 'payments' ? 'active' : ''}`}
+                onClick={() => setCurrentView('payments')}
+              >
+                💸 Payments
+              </button>
+              <button
+                className={`nav-tab ${currentView === 'expenses' ? 'active' : ''}`}
+                onClick={() => setCurrentView('expenses')}
+              >
+                📊 Expenses
+              </button>
+              <button
+                className={`nav-tab ${currentView === 'debts' ? 'active' : ''}`}
+                onClick={() => setCurrentView('debts')}
+              >
+                💰 Debts
+              </button>
+            </div>
 
-              {/* Send Form */}
-              {showSendForm && (
-                <section className="send-form">
-                  <div className="form-header">
-                    <h3>Send Payment</h3>
+            {/* Payments View */}
+            {currentView === 'payments' && (
+              <div className="main-content">
+                <section className="users-section">
+                  <h3>Send to Friends</h3>
+                  <div className="users-list">
+                    {Object.entries(getUsernameMapping()).length === 0 ? (
+                      <div className="empty-users">
+                        <p>No friends registered yet</p>
+                        <p>Share PayFriends with your friends to start sending money!</p>
+                      </div>
+                    ) : (
+                      Object.entries(getUsernameMapping())
+                        .filter(([username]) => username !== walletState.user?.username.toLowerCase())
+                        .map(([username, address]) => (
+                          <div 
+                            key={username} 
+                            className="user-card"
+                            onClick={() => {
+                              setRecipientHandle(`@${username}`)
+                              setShowSendForm(true)
+                            }}
+                          >
+                            <div className="user-card-avatar">
+                              <img src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${username}`} alt={username} />
+                            </div>
+                            <div className="user-card-info">
+                              <h4>@{username}</h4>
+                              <p className="user-card-address">{address}</p>
+                            </div>
+                            <div className="user-card-action">
+                              <span>Send →</span>
+                            </div>
+                          </div>
+                        ))
+                    )}
+                  </div>
+                </section>
+
+                {/* Send Form */}
+                {showSendForm && (
+                  <section className="send-form">
+                    <div className="form-header">
+                      <h3>Send Payment</h3>
+                      <button
+                        onClick={() => setShowSendForm(false)}
+                        className="close-btn"
+                      >
+                        ×
+                      </button>
+                    </div>
+                    
+                    {/* Payment Status Indicator */}
+                    {walletState.user && (
+                      <div className="payment-status">
+                        {(() => {
+                          const transactionCount = getTransactionCounter(walletState.user.username)
+                          const canUseGasless = canUseGaslessTransaction(walletState.user.username)
+                          const remainingGasless = MAX_GASLESS_TRANSACTIONS - transactionCount
+                          const complianceEnabled = ComplianceService.isComplianceEnabled()
+                          
+                          return (
+                            <div className={`status-indicator ${canUseGasless ? 'gasless' : 'usdc-gas'}`}>
+                              {canUseGasless ? (
+                                <div>
+                                  <span className="status-icon">🎁</span>
+                                  <span className="status-text">
+                                    Gasless transaction available! ({remainingGasless} free transactions left)
+                                    {!complianceEnabled && <span className="compliance-disabled"> • Compliance disabled</span>}
+                                  </span>
+                                </div>
+                              ) : (
+                                <div>
+                                  <span className="status-icon">💳</span>
+                                  <span className="status-text">
+                                    USDC gas payment required (used {transactionCount} free transactions)
+                                    {!complianceEnabled && <span className="compliance-disabled"> • Compliance disabled</span>}
+                                  </span>
+                                </div>
+                              )}
+                            </div>
+                          )
+                        })()}
+                      </div>
+                    )}
+                    
+                    {/* Compliance Status Indicator */}
+                    {walletState.loading && (
+                      <div className="compliance-status">
+                        <div className="status-indicator compliance-checking">
+                          <span className="status-icon">🔍</span>
+                          <span className="status-text">
+                            Checking compliance and security...
+                          </span>
+                        </div>
+                      </div>
+                    )}
+                    
+                    <div className="form-group">
+                      <label htmlFor="recipient">To:</label>
+                      <input
+                        type="text"
+                        id="recipient"
+                        value={recipientHandle}
+                        onChange={(e) => setRecipientHandle(e.target.value)}
+                        placeholder="@username or scan QR code"
+                        disabled={walletState.loading}
+                      />
+                    </div>
+                    
+                    <div className="form-group">
+                      <label htmlFor="amount">Amount:</label>
+                      <input
+                        type="number"
+                        id="amount"
+                        value={amount}
+                        onChange={(e) => setAmount(e.target.value)}
+                        placeholder="0.00"
+                        step="0.01"
+                        disabled={walletState.loading}
+                      />
+                    </div>
+
+                    <div className="form-group">
+                      <label htmlFor="message">Message (optional):</label>
+                      <input
+                        type="text"
+                        id="message"
+                        value={message}
+                        onChange={(e) => setMessage(e.target.value)}
+                        placeholder="What's it for?"
+                        disabled={walletState.loading}
+                      />
+                    </div>
+                    
                     <button
-                      onClick={() => setShowSendForm(false)}
-                      className="close-btn"
+                      onClick={handleSendPayment}
+                      disabled={walletState.loading || !recipientHandle || !amount}
+                      className="send-btn"
                     >
-                      ×
+                      {walletState.loading ? 'Sending...' : 'Send Payment'}
+                    </button>
+                  </section>
+                )}
+              </div>
+            )}
+
+            {/* Expenses View */}
+            {currentView === 'expenses' && (
+              <div className="expenses-view">
+                <div className="expenses-header">
+                  <h3>Expense Tracking</h3>
+                  <button
+                    onClick={() => setShowExpenseForm(true)}
+                    className="add-expense-btn"
+                  >
+                    + Add Expense
+                  </button>
+                </div>
+
+                {showExpenseForm && (
+                  <ExpenseForm
+                    currentUser={{
+                      username: walletState.user.username,
+                      walletAddress: walletState.user.walletAddress
+                    }}
+                    onExpenseAdded={handleExpenseAdded}
+                    onCancel={() => setShowExpenseForm(false)}
+                  />
+                )}
+
+                <ExpensesList
+                  currentUser={{ username: walletState.user.username }}
+                  onExpenseClick={handleExpenseClick}
+                />
+              </div>
+            )}
+
+            {/* Debts View */}
+            {currentView === 'debts' && (
+              <div className="debts-view">
+                <div className="settlement-header">
+                  <h3>Debt Settlement</h3>
+                  <div className="header-actions">
+                    <button
+                      onClick={() => {
+                        if (walletState.user?.username) {
+                          ExpenseService.debugAll(walletState.user.username)
+                        }
+                      }}
+                      className="debug-btn"
+                      title="Debug all data"
+                    >
+                      🐛
+                    </button>
+                    <button
+                      onClick={handleRefreshDebts}
+                      className="refresh-btn"
+                      title="Refresh debts"
+                    >
+                      🔄
                     </button>
                   </div>
-                  
-                  {/* Payment Status Indicator */}
-                  {walletState.user && (
-                    <div className="payment-status">
-                      {(() => {
-                        const paymentCount = getPaymentCounter(walletState.user.username)
-                        const canUseGasless = canUseGaslessPayment(walletState.user.username)
-                        const remainingGasless = MAX_GASLESS_PAYMENTS - paymentCount
-                        const complianceEnabled = ComplianceService.isComplianceEnabled()
-                        
-                        return (
-                          <div className={`status-indicator ${canUseGasless ? 'gasless' : 'usdc-gas'}`}>
-                            {canUseGasless ? (
-                              <div>
-                                <span className="status-icon">🎁</span>
-                                <span className="status-text">
-                                  Gasless payment available! ({remainingGasless} free payments left)
-                                  {!complianceEnabled && <span className="compliance-disabled"> • Compliance disabled</span>}
-                                </span>
-                              </div>
-                            ) : (
-                              <div>
-                                <span className="status-icon">💳</span>
-                                <span className="status-text">
-                                  USDC gas payment required (used {paymentCount} free payments)
-                                  {!complianceEnabled && <span className="compliance-disabled"> • Compliance disabled</span>}
-                                </span>
-                              </div>
-                            )}
-                          </div>
-                        )
-                      })()}
-                    </div>
-                  )}
-                  
-                  {/* Compliance Status Indicator */}
-                  {walletState.loading && (
-                    <div className="compliance-status">
-                      <div className="status-indicator compliance-checking">
-                        <span className="status-icon">🔍</span>
-                        <span className="status-text">
-                          Checking compliance and security...
-                        </span>
-                      </div>
-                    </div>
-                  )}
-                  
-                  <div className="form-group">
-                    <label htmlFor="recipient">To:</label>
-                    <input
-                      type="text"
-                      id="recipient"
-                      value={recipientHandle}
-                      onChange={(e) => setRecipientHandle(e.target.value)}
-                      placeholder="@username or scan QR code"
-                      disabled={walletState.loading}
-                    />
-                  </div>
-                  
-                  <div className="form-group">
-                    <label htmlFor="amount">Amount:</label>
-                    <input
-                      type="number"
-                      id="amount"
-                      value={amount}
-                      onChange={(e) => setAmount(e.target.value)}
-                      placeholder="0.00"
-                      step="0.01"
-                      disabled={walletState.loading}
-                    />
-                  </div>
-
-                  <div className="form-group">
-                    <label htmlFor="message">Message (optional):</label>
-                    <input
-                      type="text"
-                      id="message"
-                      value={message}
-                      onChange={(e) => setMessage(e.target.value)}
-                      placeholder="What's it for?"
-                      disabled={walletState.loading}
-                    />
-                  </div>
-                  
-                  <button
-                    onClick={handleSendPayment}
-                    disabled={walletState.loading || !recipientHandle || !amount}
-                    className="send-btn"
-                  >
-                    {walletState.loading ? 'Sending...' : 'Send Payment'}
-                  </button>
-                </section>
-              )}
-            </div>
+                </div>
+                <DebtSettlement
+                  key={refreshKey}
+                  currentUser={{
+                    username: walletState.user.username,
+                    walletAddress: walletState.user.walletAddress
+                  }}
+                  onSettlementComplete={handleSettlementComplete}
+                />
+              </div>
+            )}
 
             {/* Payment History */}
             <section className="payment-history">
@@ -843,14 +1170,14 @@ function App() {
                   <h4>Registered Users</h4>
                   <div className="user-mappings">
                     {Object.entries(getUsernameMapping()).map(([username, address]) => {
-                      const paymentCount = getPaymentCounter(username)
-                      const canUseGasless = canUseGaslessPayment(username)
+                      const transactionCount = getTransactionCounter(username)
+                      const canUseGasless = canUseGaslessTransaction(username)
                       return (
                         <div key={username} className="user-mapping">
                           <span className="username">@{username}</span>
                           <span className="address">{address}</span>
                           <span className="payment-count">
-                            Payments: {paymentCount} ({canUseGasless ? 'Gasless available' : 'USDC gas required'})
+                            Transactions: {transactionCount} ({canUseGasless ? 'Gasless available' : 'USDC gas required'})
                           </span>
                         </div>
                       )
@@ -860,10 +1187,10 @@ function App() {
                     <p>No users registered yet</p>
                   )}
                   
-                  <h4>Payment Rules</h4>
+                  <h4>Transaction Rules</h4>
                   <div className="payment-rules">
-                    <p>• First {MAX_GASLESS_PAYMENTS} payments: <strong>Gasless</strong> (free)</p>
-                    <p>• After {MAX_GASLESS_PAYMENTS} payments: <strong>USDC gas</strong> required</p>
+                    <p>• First {MAX_GASLESS_TRANSACTIONS} transactions (payments & settlements): <strong>Gasless</strong> (free)</p>
+                    <p>• After {MAX_GASLESS_TRANSACTIONS} transactions: <strong>USDC gas</strong> required</p>
                   </div>
                   
                   <h4>Compliance & Security</h4>
@@ -872,6 +1199,34 @@ function App() {
                     <p>• <strong>Automatic Blocking</strong> - Transactions to flagged addresses are automatically blocked</p>
                     <p>• <strong>Real-time Screening</strong> - Every transaction is screened before processing</p>
                     <p>• <strong>Status</strong>: {ComplianceService.isComplianceEnabled() ? '🟢 Enabled' : '🔴 Disabled'}</p>
+                  </div>
+                  
+                  <h4>Eurotrip Splitwise Features</h4>
+                  <div className="compliance-info">
+                    <p>• <strong>Expense Tracking</strong> - Split expenses with friends and track who owes what</p>
+                    <p>• <strong>Debt Settlement</strong> - Settle multiple debts in one transaction</p>
+                    <p>• <strong>Gasless Payments</strong> - First {MAX_GASLESS_TRANSACTIONS} transactions are free</p>
+                    <p>• <strong>Real-time Balance</strong> - See your actual USDC balance from the blockchain</p>
+                  </div>
+                  
+                  <h4>Debug Tools</h4>
+                  <div className="debug-tools">
+                    <button
+                      onClick={() => {
+                        if (walletState.user?.username) {
+                          ExpenseService.debugAll(walletState.user.username)
+                        }
+                      }}
+                      className="debug-btn"
+                    >
+                      Debug Current User
+                    </button>
+                    <button
+                      onClick={() => ExpenseService.testDebtCalculation()}
+                      className="debug-btn"
+                    >
+                      Test Debt Calculation
+                    </button>
                   </div>
                 </div>
               )}
@@ -896,10 +1251,12 @@ function App() {
       </main>
 
       <footer className="pay-footer">
-        <p>Powered by Circle Modular Wallet SDK</p>
+        <p>Powered by Circle Modular Wallet SDK • Eurotrip Splitwise</p>
       </footer>
     </div>
   )
 }
 
 export default App
+
+
