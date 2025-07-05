@@ -562,95 +562,128 @@ function App() {
         {walletState.isConnected && walletState.user && (
           <>
             <section className="user-header">
-              <div className="user-info">
+              <div className="user-profile">
                 <div className="user-avatar">
                   <img src={walletState.user.avatar} alt={walletState.user.username} />
                 </div>
                 <div className="user-details">
                   <h2>{walletState.user.username}</h2>
                   <p className="balance">$0.00 USDC</p>
+                  <p className="wallet-address">{walletState.user.walletAddress}</p>
                 </div>
               </div>
-              <button
-                onClick={() => setShowSendForm(true)}
-                className="send-btn primary"
-                disabled={walletState.loading}
-              >
-                Send
-              </button>
             </section>
 
-            {/* Send Form */}
-            {showSendForm && (
-              <section className="send-form">
-                <div className="form-header">
-                  <h3>Send Payment</h3>
-                  <button
-                    onClick={() => setShowSendForm(false)}
-                    className="close-btn"
-                  >
-                    ×
-                  </button>
+            {/* Users List and Send Form */}
+            <div className="main-content">
+              <section className="users-section">
+                <h3>Send to Friends</h3>
+                <div className="users-list">
+                  {Object.entries(getUsernameMapping()).length === 0 ? (
+                    <div className="empty-users">
+                      <p>No friends registered yet</p>
+                      <p>Share PayFriends with your friends to start sending money!</p>
+                    </div>
+                  ) : (
+                    Object.entries(getUsernameMapping())
+                      .filter(([username]) => username !== walletState.user?.username.toLowerCase())
+                      .map(([username, address]) => (
+                        <div 
+                          key={username} 
+                          className="user-card"
+                          onClick={() => {
+                            setRecipientHandle(`@${username}`)
+                            setShowSendForm(true)
+                          }}
+                        >
+                          <div className="user-card-avatar">
+                            <img src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${username}`} alt={username} />
+                          </div>
+                          <div className="user-card-info">
+                            <h4>@{username}</h4>
+                            <p className="user-card-address">{address}</p>
+                          </div>
+                          <div className="user-card-action">
+                            <span>Send →</span>
+                          </div>
+                        </div>
+                      ))
+                  )}
                 </div>
-                
-                <div className="form-group">
-                  <label htmlFor="recipient">To:</label>
-                  <input
-                    type="text"
-                    id="recipient"
-                    value={recipientHandle}
-                    onChange={(e) => setRecipientHandle(e.target.value)}
-                    placeholder="@username or scan QR code"
-                    disabled={walletState.loading}
-                  />
-                </div>
-                
-                <div className="form-group">
-                  <label htmlFor="amount">Amount:</label>
-                  <input
-                    type="number"
-                    id="amount"
-                    value={amount}
-                    onChange={(e) => setAmount(e.target.value)}
-                    placeholder="0.00"
-                    step="0.01"
-                    disabled={walletState.loading}
-                  />
-                </div>
+              </section>
 
-                <div className="form-group">
-                  <label htmlFor="message">Message (optional):</label>
-                  <input
-                    type="text"
-                    id="message"
-                    value={message}
-                    onChange={(e) => setMessage(e.target.value)}
-                    placeholder="What's it for?"
-                    disabled={walletState.loading}
-                  />
-                </div>
-
-                <div className="form-group">
-                  <label className="checkbox-label">
+              {/* Send Form */}
+              {showSendForm && (
+                <section className="send-form">
+                  <div className="form-header">
+                    <h3>Send Payment</h3>
+                    <button
+                      onClick={() => setShowSendForm(false)}
+                      className="close-btn"
+                    >
+                      ×
+                    </button>
+                  </div>
+                  
+                  <div className="form-group">
+                    <label htmlFor="recipient">To:</label>
                     <input
-                      type="checkbox"
-                      checked={usePaymaster}
-                      onChange={(e) => setUsePaymaster(e.target.checked)}
+                      type="text"
+                      id="recipient"
+                      value={recipientHandle}
+                      onChange={(e) => setRecipientHandle(e.target.value)}
+                      placeholder="@username or scan QR code"
                       disabled={walletState.loading}
                     />
-                    <span>Pay gas with USDC (recommended)</span>
-                  </label>
-                </div>
-                
-                <button
-                  onClick={handleSendPayment}
-                  disabled={walletState.loading || !recipientHandle || !amount}
-                  className="send-btn"
-                >
-                  {walletState.loading ? 'Sending...' : 'Send Payment'}
-                </button>
-              </section>
-            )}
+                  </div>
+                  
+                  <div className="form-group">
+                    <label htmlFor="amount">Amount:</label>
+                    <input
+                      type="number"
+                      id="amount"
+                      value={amount}
+                      onChange={(e) => setAmount(e.target.value)}
+                      placeholder="0.00"
+                      step="0.01"
+                      disabled={walletState.loading}
+                    />
+                  </div>
+
+                  <div className="form-group">
+                    <label htmlFor="message">Message (optional):</label>
+                    <input
+                      type="text"
+                      id="message"
+                      value={message}
+                      onChange={(e) => setMessage(e.target.value)}
+                      placeholder="What's it for?"
+                      disabled={walletState.loading}
+                    />
+                  </div>
+
+                  <div className="form-group">
+                    <label className="checkbox-label">
+                      <input
+                        type="checkbox"
+                        checked={usePaymaster}
+                        onChange={(e) => setUsePaymaster(e.target.checked)}
+                        disabled={walletState.loading}
+                      />
+                      <span>Pay gas with USDC (recommended)</span>
+                    </label>
+                  </div>
+                  
+                  <button
+                    onClick={handleSendPayment}
+                    disabled={walletState.loading || !recipientHandle || !amount}
+                    className="send-btn"
+                  >
+                    {walletState.loading ? 'Sending...' : 'Send Payment'}
+                  </button>
+                </section>
+              )}
+            </div>
 
             {/* Payment History */}
             <section className="payment-history">
