@@ -8,7 +8,7 @@ import {
   encodeTransfer,
   WebAuthnMode,
 } from '@circle-fin/modular-wallets-core'
-import { createPublicClient, getContract, encodePacked, parseErc6492Signature, maxUint256 } from 'viem'
+import { createPublicClient, getContract, encodePacked, parseErc6492Signature, maxUint256, getAddress } from 'viem'
 import { baseSepolia } from 'viem/chains'
 import {
   createBundlerClient,
@@ -23,6 +23,42 @@ const clientUrl = import.meta.env.VITE_CLIENT_URL as string
 const USDC_CONTRACT_ADDRESS = '0x036CbD53842c5426634e7929541eC2318f3dCF7e' as `0x${string}` // Base Sepolia testnet
 const USDC_DECIMALS = 6
 const PAYMASTER_V07_ADDRESS = '0x31BE08D380A21fc740883c0BC434FcFc88740b58' as `0x${string}` // Circle Paymaster v0.7
+
+// Username mapping storage
+const USERNAME_MAPPING_KEY = 'payfriends_username_mapping'
+
+// Helper functions for username mapping
+const getUsernameMapping = (): Record<string, string> => {
+  try {
+    const stored = localStorage.getItem(USERNAME_MAPPING_KEY)
+    return stored ? JSON.parse(stored) : {}
+  } catch {
+    return {}
+  }
+}
+
+const setUsernameMapping = (username: string, address: string) => {
+  try {
+    const mapping = getUsernameMapping()
+    mapping[username.toLowerCase()] = address
+    localStorage.setItem(USERNAME_MAPPING_KEY, JSON.stringify(mapping))
+  } catch (error) {
+    console.error('Failed to save username mapping:', error)
+  }
+}
+
+const getAddressFromUsername = (username: string): string | null => {
+  const mapping = getUsernameMapping()
+  return mapping[username.toLowerCase()] || null
+}
+
+const isValidAddress = (address: string): boolean => {
+  try {
+    return address.startsWith('0x') && address.length === 42 && /^[0-9a-fA-F]+$/.test(address.slice(2))
+  } catch {
+    return false
+  }
+}
 
 // EIP-2612 Permit ABI
 const eip2612Abi = [
@@ -195,6 +231,7 @@ function App() {
   const [amount, setAmount] = useState('')
   const [message, setMessage] = useState('')
   const [usePaymaster, setUsePaymaster] = useState(true)
+  const [showDebug, setShowDebug] = useState(false)
 
   // Check if environment variables are set
   useEffect(() => {
@@ -279,6 +316,9 @@ function App() {
         loading: false,
         error: null,
       }))
+
+      // Save username mapping
+      setUsernameMapping(walletState.user.username, smartAccount.address)
     } catch (error) {
       console.error('Passkey authentication error:', error)
       setWalletState(prev => ({
@@ -305,16 +345,40 @@ function App() {
       // Convert amount to wei (USDC has 6 decimals)
       const amountInWei = BigInt(parseFloat(amount) * Math.pow(10, USDC_DECIMALS))
 
-      // For demo purposes, we'll use a mock recipient address
-      // In a real app, you'd look up the handle in a database
-      const mockRecipientAddress = '0x742d35Cc6634C0532925a3b8D4C9db96C4b4d8b6'
+      // Parse recipient - could be a username or direct address
+      let recipientAddress: `0x${string}`
+      
+      if (recipientHandle.startsWith('0x')) {
+        // Direct address input
+        try {
+          // Validate and normalize the address
+          recipientAddress = getAddress(recipientHandle) as `0x${string}`
+        } catch (error) {
+          throw new Error('Invalid address format. Please enter a valid Ethereum address.')
+        }
+      } else {
+        // Username/handle input - look up in local records
+        const cleanUsername = recipientHandle.replace('@', '') // Remove @ if present
+        const mappedAddress = getAddressFromUsername(cleanUsername)
+        
+        if (!mappedAddress) {
+          throw new Error(`User "${cleanUsername}" not found. Make sure they have registered with PayFriends.`)
+        }
+        
+        recipientAddress = mappedAddress as `0x${string}`
+        
+        // Validate the address
+        if (!isValidAddress(recipientAddress)) {
+          throw new Error('Invalid recipient address. Please try again.')
+        }
+      }
 
       if (usePaymaster) {
         // Use Circle Paymaster to pay gas with USDC
-        await handlePaymasterTransaction(amountInWei, mockRecipientAddress)
+        await handlePaymasterTransaction(amountInWei, recipientAddress)
       } else {
         // Regular transaction with native gas payment
-        await handleRegularTransaction(amountInWei, mockRecipientAddress)
+        await handleRegularTransaction(amountInWei, recipientAddress)
       }
 
       // Add payment to history
@@ -626,6 +690,33 @@ function App() {
                       </div>
                     </div>
                   ))}
+                </div>
+              )}
+            </section>
+
+            {/* Debug Section */}
+            <section className="debug-section">
+              <button
+                onClick={() => setShowDebug(!showDebug)}
+                className="debug-toggle"
+              >
+                {showDebug ? 'Hide' : 'Show'} Debug Info
+              </button>
+              
+              {showDebug && (
+                <div className="debug-info">
+                  <h4>Registered Users</h4>
+                  <div className="user-mappings">
+                    {Object.entries(getUsernameMapping()).map(([username, address]) => (
+                      <div key={username} className="user-mapping">
+                        <span className="username">@{username}</span>
+                        <span className="address">{address}</span>
+                      </div>
+                    ))}
+                  </div>
+                  {Object.keys(getUsernameMapping()).length === 0 && (
+                    <p>No users registered yet</p>
+                  )}
                 </div>
               )}
             </section>
