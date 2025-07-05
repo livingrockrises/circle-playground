@@ -15,7 +15,7 @@ const options = {
   data: {
     idempotencyKey: '44bd2d89-9461-4502-84ba-550c9e278db7', // unique-idempotency-key
     address: '0x7306aC7A32eb690232De81a9FFB44Bb346026faB',
-    chain: 'ETH-SEPOLIA',
+    chain: 'BASE-SEPOLIA',
   },
 };
 

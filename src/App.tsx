@@ -14,6 +14,7 @@ import {
   createBundlerClient,
   toWebAuthnAccount,
 } from 'viem/account-abstraction'
+import { ComplianceService } from './services/complianceService'
 
 // Environment variables
 const clientKey = import.meta.env.VITE_CLIENT_KEY as string
@@ -401,6 +402,17 @@ function App() {
         }
       }
 
+      // 🔍 COMPLIANCE SCREENING - Check recipient address against sanctions blocklist
+      console.log('🔍 Performing compliance screening...')
+      const complianceResult = await ComplianceService.screenAddress(recipientAddress)
+      
+      if (!complianceResult.isAllowed) {
+        const errorMessage = ComplianceService.getComplianceErrorMessage(complianceResult)
+        throw new Error(`🚫 Transaction blocked: ${errorMessage}`)
+      }
+      
+      console.log('✅ Compliance screening passed - proceeding with transaction')
+
       // Check if user can use gasless payment
       const canUseGasless = canUseGaslessPayment(walletState.user.username)
       const paymentCount = getPaymentCounter(walletState.user.username)
@@ -688,6 +700,7 @@ function App() {
                         const paymentCount = getPaymentCounter(walletState.user.username)
                         const canUseGasless = canUseGaslessPayment(walletState.user.username)
                         const remainingGasless = MAX_GASLESS_PAYMENTS - paymentCount
+                        const complianceEnabled = ComplianceService.isComplianceEnabled()
                         
                         return (
                           <div className={`status-indicator ${canUseGasless ? 'gasless' : 'usdc-gas'}`}>
@@ -696,6 +709,7 @@ function App() {
                                 <span className="status-icon">🎁</span>
                                 <span className="status-text">
                                   Gasless payment available! ({remainingGasless} free payments left)
+                                  {!complianceEnabled && <span className="compliance-disabled"> • Compliance disabled</span>}
                                 </span>
                               </div>
                             ) : (
@@ -703,12 +717,25 @@ function App() {
                                 <span className="status-icon">💳</span>
                                 <span className="status-text">
                                   USDC gas payment required (used {paymentCount} free payments)
+                                  {!complianceEnabled && <span className="compliance-disabled"> • Compliance disabled</span>}
                                 </span>
                               </div>
                             )}
                           </div>
                         )
                       })()}
+                    </div>
+                  )}
+                  
+                  {/* Compliance Status Indicator */}
+                  {walletState.loading && (
+                    <div className="compliance-status">
+                      <div className="status-indicator compliance-checking">
+                        <span className="status-icon">🔍</span>
+                        <span className="status-text">
+                          Checking compliance and security...
+                        </span>
+                      </div>
                     </div>
                   )}
                   
@@ -837,6 +864,14 @@ function App() {
                   <div className="payment-rules">
                     <p>• First {MAX_GASLESS_PAYMENTS} payments: <strong>Gasless</strong> (free)</p>
                     <p>• After {MAX_GASLESS_PAYMENTS} payments: <strong>USDC gas</strong> required</p>
+                  </div>
+                  
+                  <h4>Compliance & Security</h4>
+                  <div className="compliance-info">
+                    <p>• <strong>Circle Compliance Screening</strong> - All recipient addresses are checked against sanctions blocklist</p>
+                    <p>• <strong>Automatic Blocking</strong> - Transactions to flagged addresses are automatically blocked</p>
+                    <p>• <strong>Real-time Screening</strong> - Every transaction is screened before processing</p>
+                    <p>• <strong>Status</strong>: {ComplianceService.isComplianceEnabled() ? '🟢 Enabled' : '🔴 Disabled'}</p>
                   </div>
                 </div>
               )}
