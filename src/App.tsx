@@ -63,6 +63,16 @@ const USDC_ABI = [
     stateMutability: "view",
     type: "function",
   },
+  {
+    inputs: [
+      { internalType: "address", name: "to", type: "address" },
+      { internalType: "uint256", name: "amount", type: "uint256" }
+    ],
+    name: "transfer",
+    outputs: [{ internalType: "bool", name: "", type: "bool" }],
+    stateMutability: "nonpayable",
+    type: "function",
+  },
 ] as const
 
 // EIP-2612 permit implementation (adapted from Circle docs)
@@ -106,7 +116,7 @@ async function eip2612Permit({
   }
 }
 
-// Sign permit function (simplified to match working payments code)
+// Sign permit function (updated to match tutorial)
 async function signPermit({
   tokenAddress,
   client,
@@ -121,21 +131,38 @@ async function signPermit({
   permitAmount: bigint
 }) {
   try {
-    // Create token contract instance
+    console.log('🔐 Starting permit signing...')
+    console.log('Token address:', tokenAddress)
+    console.log('Spender address:', spenderAddress)
+    console.log('Permit amount:', permitAmount.toString())
+    console.log('Account address:', account.address)
+    
+    // Create token contract instance (matching tutorial)
     const token = {
       address: tokenAddress,
       abi: USDC_ABI,
       read: {
-        name: async () => "USD Coin",
-        version: async () => "2",
+        name: async () => await client.readContract({
+          address: tokenAddress,
+          abi: USDC_ABI,
+          functionName: 'name',
+        }),
+        version: async () => await client.readContract({
+          address: tokenAddress,
+          abi: USDC_ABI,
+          functionName: 'version',
+        }),
         nonces: async (args: [`0x${string}`]) => {
           try {
-            return await client.readContract({
+            console.log('📖 Reading nonce for address:', args[0])
+            const nonce = await client.readContract({
               address: tokenAddress,
               abi: USDC_ABI,
               functionName: 'nonces',
               args,
             })
+            console.log('✅ Nonce read successfully:', nonce.toString())
+            return nonce
           } catch (error) {
             console.warn('⚠️ Could not read nonce, using 0:', error)
             return 0n
@@ -156,12 +183,30 @@ async function signPermit({
     console.log('Permit data:', permitData)
     
     const wrappedPermitSignature = await account.signTypedData(permitData)
-    const { signature } = parseErc6492Signature(wrappedPermitSignature)
+    console.log('✅ Raw permit signature created')
     
-    console.log('✅ Permit signature created:', signature)
+    // Verify the signature (matching tutorial)
+    const isValid = await client.verifyTypedData({
+      ...permitData,
+      address: account.address,
+      signature: wrappedPermitSignature,
+    })
+
+    if (!isValid) {
+      throw new Error(`Invalid permit signature for ${account.address}: ${wrappedPermitSignature}`)
+    }
+    
+    const { signature } = parseErc6492Signature(wrappedPermitSignature)
+    console.log('✅ Parsed permit signature:', signature.substring(0, 20) + '...')
+    
     return signature
   } catch (error) {
     console.error('❌ Permit signing failed:', error)
+    console.error('Error details:', {
+      message: error instanceof Error ? error.message : 'Unknown error',
+      stack: error instanceof Error ? error.stack : undefined,
+      name: error instanceof Error ? error.name : undefined
+    })
     throw error
   }
 }
@@ -514,6 +559,10 @@ function App() {
 
   // Paymaster transaction (USDC gas payment)
   const handlePaymasterTransaction = async (amountInWei: bigint, recipientAddress: string) => {
+    console.log('🚀 Starting USDC paymaster transaction...')
+    console.log('Amount:', amountInWei.toString())
+    console.log('Recipient:', recipientAddress)
+    
     // Create modular transport for baseSepolia
     const modularTransport = toModularTransport(
       CLIENT_URL + '/baseSepolia',
@@ -529,43 +578,64 @@ function App() {
     // Create paymaster configuration
     const paymaster = {
       async getPaymasterData(parameters: any) {
+        console.log('🔧 Creating paymaster data...')
         const permitAmount = 10000000n // 10 USDC for gas
         console.log(`🔐 Single payment, permit amount: ${permitAmount} (${Number(permitAmount) / 1000000} USDC)`)
         
-        const permitSignature = await signPermit({
-          tokenAddress: USDC_CONTRACT_ADDRESS,
-          account: walletState.smartAccount,
-          client,
-          spenderAddress: PAYMASTER_V07_ADDRESS,
-          permitAmount: permitAmount,
-        })
+        try {
+          const permitSignature = await signPermit({
+            tokenAddress: USDC_CONTRACT_ADDRESS,
+            account: walletState.smartAccount,
+            client,
+            spenderAddress: PAYMASTER_V07_ADDRESS,
+            permitAmount: permitAmount,
+          })
 
-        const paymasterData = encodePacked(
-          ["uint8", "address", "uint256", "bytes"],
-          [0, USDC_CONTRACT_ADDRESS, permitAmount, permitSignature],
-        ) as `0x${string}`
+          const paymasterData = encodePacked(
+            ["uint8", "address", "uint256", "bytes"],
+            [0, USDC_CONTRACT_ADDRESS, permitAmount, permitSignature],
+          ) as `0x${string}`
 
-        return {
-          paymaster: PAYMASTER_V07_ADDRESS as `0x${string}`,
-          paymasterData,
-          paymasterVerificationGasLimit: 200000n,
-          paymasterPostOpGasLimit: 15000n,
-          isFinal: true,
+          console.log('✅ Paymaster data created successfully')
+          
+          return {
+            paymaster: PAYMASTER_V07_ADDRESS as `0x${string}`,
+            paymasterData,
+            paymasterVerificationGasLimit: 200000n,
+            paymasterPostOpGasLimit: 15000n,
+            isFinal: true,
+          }
+        } catch (error) {
+          console.error('❌ Failed to create paymaster data:', error)
+          throw error
         }
       },
     }
 
-    const userOpHash = await walletState.bundlerClient.sendUserOperation({
-      account: walletState.smartAccount,
-      calls: [encodeTransfer(recipientAddress as `0x${string}`, USDC_CONTRACT_ADDRESS, amountInWei)],
-      paymaster,
-    })
+    try {
+      console.log('📤 Sending user operation...')
+      const userOpHash = await walletState.bundlerClient.sendUserOperation({
+        account: walletState.smartAccount,
+        calls: [{
+          to: USDC_CONTRACT_ADDRESS,
+          abi: USDC_ABI,
+          functionName: "transfer",
+          args: [recipientAddress as `0x${string}`, amountInWei],
+        }],
+        paymaster,
+      })
+      console.log('✅ User operation sent, hash:', userOpHash)
 
-    const { receipt } = await walletState.bundlerClient.waitForUserOperationReceipt({
-      hash: userOpHash,
-    })
+      console.log('⏳ Waiting for receipt...')
+      const { receipt } = await walletState.bundlerClient.waitForUserOperationReceipt({
+        hash: userOpHash,
+      })
 
-    console.log('✅ USDC paymaster transaction successful:', receipt.transactionHash)
+      console.log('✅ USDC paymaster transaction successful:', receipt.transactionHash)
+    } catch (error) {
+      console.error('❌ USDC paymaster transaction failed:', error)
+      throw error
+    }
   }
 
   // New functions for Splitwise functionality
@@ -601,9 +671,12 @@ function App() {
       console.log(`Settlement #${transactionCount + 1} for ${walletState.user.username}: ${shouldUsePaymaster ? 'USDC gas' : 'Gasless'}`)
       
       // Create calls for all payments in the batch
-      const calls = batchPayment.payments.map(payment => 
-        encodeTransfer(payment.toAddress as `0x${string}`, USDC_CONTRACT_ADDRESS, BigInt(Math.round(payment.amount * 1000000)))
-      )
+      const calls = batchPayment.payments.map(payment => ({
+        to: USDC_CONTRACT_ADDRESS,
+        abi: USDC_ABI,
+        functionName: "transfer",
+        args: [payment.toAddress as `0x${string}`, BigInt(Math.round(payment.amount * 1000000))],
+      }))
 
       console.log(`🔄 Batch settlement: ${calls.length} payments, total amount: $${settlement.amount.toFixed(2)}`)
       batchPayment.payments.forEach((payment, index) => {
